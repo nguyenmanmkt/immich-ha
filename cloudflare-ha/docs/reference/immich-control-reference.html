@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="vi" class="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Immich Control — Home Assistant Bento Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'Inter', 'sans-serif'],
+          },
+          colors: {
+            ha: {
+              bgLight: '#f3f5f8',
+              cardLight: '#ffffff',
+              subLight: '#f8fafc',
+              bgDark: '#111418',
+              cardDark: '#1c2026',
+              subDark: '#252a32',
+              accent: '#03a9f4',
+              green: '#10b981',
+              amber: '#f59e0b',
+              purple: '#8b5cf6',
+            }
+          },
+          boxShadow: {
+            'mushroom': '0 4px 20px -2px rgba(15, 23, 42, 0.04), 0 1px 3px 0 rgba(15, 23, 42, 0.02)',
+            'mushroom-hover': '0 10px 28px -4px rgba(15, 23, 42, 0.08), 0 4px 10px -2px rgba(15, 23, 42, 0.03)',
+            'mushroom-dark': '0 4px 20px -2px rgba(0, 0, 0, 0.35), 0 1px 3px 0 rgba(0, 0, 0, 0.25)',
+            'active-glow': '0 0 0 1.5px rgba(16, 185, 129, 0.45), 0 10px 28px -6px rgba(16, 185, 129, 0.14)',
+          },
+          borderRadius: {
+            'bento': '22px',
+            'tile': '18px',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * {
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      transition: background-color 0.25s ease, color 0.25s ease;
+    }
+    .mushroom-card {
+      border-radius: 22px;
+      transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.2s ease, border-color 0.2s ease, background-color 0.25s ease;
+    }
+    .mushroom-card-interactive:hover {
+      transform: translateY(-2px);
+    }
+    /* Custom subtle scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(148, 163, 184, 0.3);
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(148, 163, 184, 0.5);
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.85); opacity: 0.8; }
+      70% { transform: scale(1.9); opacity: 0; }
+      100% { transform: scale(1.9); opacity: 0; }
+    }
+    .live-dot::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 9999px;
+      background-color: inherit;
+      animation: pulse-ring 2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+    }
+  </style>
+</head>
+<body class="bg-ha-bgLight text-slate-800 dark:bg-ha-bgDark dark:text-slate-100 min-h-screen antialiased selection:bg-sky-500/20">
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none px-4 sm:px-0"></div>
+
+  <!-- Confirmation Modal -->
+  <div id="confirm-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 transition-opacity">
+    <div class="bg-white dark:bg-ha-cardDark border border-slate-200/80 dark:border-slate-700/70 rounded-bento max-w-md w-full p-6 shadow-2xl transform transition-all scale-95 opacity-0" id="confirm-modal-box">
+      <div class="flex items-start gap-4">
+        <div id="modal-icon-wrap" class="w-12 h-12 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        </div>
+        <div class="flex-1">
+          <h3 id="modal-title" class="text-lg font-bold text-slate-900 dark:text-white">Xác nhận thao tác</h3>
+          <p id="modal-desc" class="text-sm text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">Nội dung xác nhận.</p>
+        </div>
+      </div>
+      <div class="mt-6 flex items-center justify-end gap-2.5">
+        <button onclick="closeModal()" class="px-4 py-2.5 rounded-2xl text-sm font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">Hủy bỏ</button>
+        <button id="modal-confirm-btn" class="px-5 py-2.5 rounded-2xl text-sm font-semibold text-white bg-sky-500 hover:bg-sky-600 shadow-sm transition">Xác nhận</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App Shell -->
+  <div class="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7">
+
+    <!-- Top Floating Pill Header (Home Assistant Style) -->
+    <header class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+      <!-- Brand & Page Title -->
+      <div class="flex items-center gap-3.5">
+        <div class="w-12 h-12 rounded-[18px] bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-sky-500/20 shrink-0">
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <circle cx="12" cy="12" r="9" stroke-opacity="0.35"/>
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v.01M11 12h1v4h1"/>
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2.5">
+            <h1 class="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">Hệ thống Immich</h1>
+            <span class="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-sky-500/12 text-sky-600 dark:bg-sky-400/15 dark:text-sky-400">
+              Control v2.4
+            </span>
+          </div>
+          <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">Theo dõi dữ liệu và chuyển quyền phục vụ giữa hai server.</p>
+        </div>
+      </div>
+
+      <!-- Floating Pill Navigation + Action Controls -->
+      <div class="flex flex-wrap items-center justify-between sm:justify-end gap-2.5">
+        <!-- Segmented Pill Nav -->
+        <nav aria-label="Điều hướng chính" class="inline-flex items-center p-1.5 rounded-full bg-white/90 dark:bg-ha-cardDark/90 backdrop-blur-md border border-slate-200/70 dark:border-slate-800 shadow-mushroom dark:shadow-mushroom-dark">
+          <button onclick="switchTab('overview')" id="tab-btn-overview" class="tab-btn flex items-center gap-2 px-4 py-2 rounded-full text-xs sm:text-sm font-semibold transition-all bg-slate-900 text-white dark:bg-sky-500 dark:text-white shadow-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
+            <span>Tổng quan</span>
+          </button>
+          <button onclick="switchTab('orchestration')" id="tab-btn-orchestration" class="tab-btn flex items-center gap-2 px-4 py-2 rounded-full text-xs sm:text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-all">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+            <span>Điều phối</span>
+          </button>
+          <button onclick="switchTab('history')" id="tab-btn-history" class="tab-btn flex items-center gap-2 px-4 py-2 rounded-full text-xs sm:text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-all">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 3"/></svg>
+            <span>Lịch sử hoạt động</span>
+          </button>
+        </nav>
+
+        <!-- Theme Toggle & Open Immich -->
+        <div class="flex items-center gap-2">
+          <button onclick="toggleTheme()" title="Chuyển đổi giao diện Sáng / Tối" class="w-10 h-10 rounded-full bg-white dark:bg-ha-cardDark border border-slate-200/70 dark:border-slate-800 shadow-mushroom dark:shadow-mushroom-dark flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-sky-500 dark:hover:text-sky-400 transition">
+            <!-- Sun icon (shown in dark mode) -->
+            <svg class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <!-- Moon icon (shown in light mode) -->
+            <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
+
+          <a href="#open-immich" onclick="event.preventDefault(); showToast('Đang mở ứng dụng Immich tại immich.example.org...', 'info')" class="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-white dark:bg-ha-cardDark border border-slate-200/70 dark:border-slate-800 shadow-mushroom dark:shadow-mushroom-dark text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 hover:border-sky-400/50 hover:text-sky-600 dark:hover:text-sky-400 transition">
+            <span>Mở Immich</span>
+            <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 17L17 7M7 7h10v10"/></svg>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 1: TỔNG QUAN (OVERVIEW - BENTO GRID DASHBOARD)                    -->
+    <!-- ===================================================================== -->
+    <main id="view-overview" class="space-y-4">
+
+      <!-- HÀNG 1: 4 MUSHROOM QUICK STATUS TILES (1x1) -->
+      <section aria-label="Trạng thái nhanh" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        
+        <!-- Tile 1: Đang phục vụ -->
+        <div class="mushroom-card mushroom-card-interactive bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800/80 shadow-mushroom dark:shadow-mushroom-dark p-4 flex items-center gap-3.5">
+          <div class="relative w-11 h-11 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
+            <span class="live-dot absolute top-0.5 right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-medium text-slate-500 dark:text-slate-400 truncate">Đang phục vụ</span>
+              <span id="quick-updated-time" class="text-[11px] font-medium text-slate-400 dark:text-slate-500 shrink-0">08:52:55 18-11</span>
+            </div>
+            <div class="flex items-center gap-2 mt-0.5">
+              <p id="quick-active-name" class="text-base font-bold text-slate-900 dark:text-white truncate">Proxmox3</p>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">ACTIVE</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tile 2: Sẵn sàng dự phòng -->
+        <div class="mushroom-card mushroom-card-interactive bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800/80 shadow-mushroom dark:shadow-mushroom-dark p-4 flex items-center gap-3.5">
+          <div class="w-11 h-11 rounded-full bg-sky-500/15 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+          </div>
+          <div class="min-w-0 flex-1">
+            <span class="text-xs font-medium text-slate-500 dark:text-slate-400 block truncate">Sẵn sàng dự phòng</span>
+            <div class="flex items-center gap-2 mt-0.5">
+              <p id="quick-standby-name" class="text-base font-bold text-slate-900 dark:text-white truncate">Asus PVE</p>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/12 text-sky-600 dark:text-sky-400">STANDBY</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tile 3: Tự chuyển máy (Interactive Toggle Switch) -->
+        <div onclick="toggleSettingSwitch('autoFailover')" class="cursor-pointer mushroom-card mushroom-card-interactive bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800/80 shadow-mushroom dark:shadow-mushroom-dark p-4 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3.5 min-w-0">
+            <div id="icon-autoFailover" class="w-11 h-11 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 transition-colors">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <div class="min-w-0">
+              <span class="text-xs font-medium text-slate-500 dark:text-slate-400 block truncate">Tự chuyển máy</span>
+              <span id="label-autoFailover" class="text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 block">BẬT · Failover</span>
+            </div>
+          </div>
+          <!-- Mushroom Pill Switch -->
+          <button type="button" role="switch" aria-checked="true" id="switch-autoFailover" class="relative inline-flex h-7 w-12 shrink-0 rounded-full border-2 border-transparent bg-emerald-500 transition-colors duration-200 ease-in-out focus:outline-none">
+            <span id="knob-autoFailover" class="pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out translate-x-5"></span>
+          </button>
+        </div>
+
+        <!-- Tile 4: Tự duy trì dự phòng (Interactive Toggle Switch) -->
+        <div onclick="toggleSettingSwitch('autoStandby')" class="cursor-pointer mushroom-card mushroom-card-interactive bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800/80 shadow-mushroom dark:shadow-mushroom-dark p-4 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3.5 min-w-0">
+            <div id="icon-autoStandby" class="w-11 h-11 rounded-full bg-purple-500/15 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0 transition-colors">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            </div>
+            <div class="min-w-0">
+              <span class="text-xs font-medium text-slate-500 dark:text-slate-400 block truncate">Tự duy trì dự phòng</span>
+              <span id="label-autoStandby" class="text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 block">BẬT · Đồng bộ</span>
+            </div>
+          </div>
+          <!-- Mushroom Pill Switch -->
+          <button type="button" role="switch" aria-checked="true" id="switch-autoStandby" class="relative inline-flex h-7 w-12 shrink-0 rounded-full border-2 border-transparent bg-emerald-500 transition-colors duration-200 ease-in-out focus:outline-none">
+            <span id="knob-autoStandby" class="pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out translate-x-5"></span>
+          </button>
+        </div>
+
+      </section>
+
+      <!-- HÀNG 2: BENTO GRID CHÍNH (2/3 SERVER CARDS + 1/3 FAILOVER CONTROL) -->
+      <section class="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
+        
+        <!-- Cột Trái (8/12 = 2/3 chiều rộng): 2 Server Cards đặt cạnh nhau -->
+        <div id="server-cards-container" class="xl:col-span-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Rendered dynamically by JS for smooth failover swap -->
+        </div>
+
+        <!-- Cột Phải (4/12 = 1/3 chiều rộng): Interactive Failover Control Card -->
+        <div class="xl:col-span-4 mushroom-card bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800/80 shadow-mushroom dark:shadow-mushroom-dark p-5 sm:p-6 flex flex-col justify-between">
+          <div>
+            <!-- Header -->
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <span class="text-[11px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">Vai trò hai máy</span>
+                <h2 class="text-lg font-extrabold text-slate-900 dark:text-white mt-0.5">Chuyển máy đang phục vụ</h2>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Bàn giao sang máy còn lại hoặc mở cài đặt ưu tiên.</p>
+              </div>
+              <div class="w-10 h-10 rounded-full bg-sky-500/12 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+              </div>
+            </div>
+
+            <!-- Current Role Summary Pill -->
+            <div class="mt-4 px-3.5 py-2.5 rounded-2xl bg-slate-100/80 dark:bg-ha-subDark flex items-center justify-between text-xs">
+              <span class="text-slate-500 dark:text-slate-400">Hiện tại:</span>
+              <span id="role-summary-pill" class="font-semibold text-slate-800 dark:text-slate-200">Đang phục vụ: Proxmox3 · Dự phòng: Asus PVE</span>
+            </div>
+
+            <!-- Interactive Radio Tiles -->
+            <div class="mt-4 space-y-2.5" id="failover-radio-group">
+              <!-- Radio Option: Proxmox3 -->
+              <div onclick="selectTargetServer('proxmox3')" id="radio-card-proxmox3" class="cursor-pointer rounded-tile p-3.5 border-2 transition-all flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <div id="radio-dot-proxmox3" class="w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors">
+                    <div class="w-2.5 h-2.5 rounded-full bg-current"></div>
+                  </div>
+                  <div>
+                    <div class="text-sm font-bold text-slate-900 dark:text-white">Proxmox3</div>
+                    <div class="text-[11px] text-slate-500 dark:text-slate-400">Máy A · LXC 113</div>
+                  </div>
+                </div>
+                <span id="radio-badge-proxmox3" class="px-2.5 py-1 rounded-full text-[11px] font-bold">Đang phục vụ</span>
+              </div>
+
+              <!-- Radio Option: Asus PVE -->
+              <div onclick="selectTargetServer('asus')" id="radio-card-asus" class="cursor-pointer rounded-tile p-3.5 border-2 transition-all flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <div id="radio-dot-asus" class="w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors">
+                    <div class="w-2.5 h-2.5 rounded-full bg-current"></div>
+                  </div>
+                  <div>
+                    <div class="text-sm font-bold text-slate-900 dark:text-white">Asus PVE</div>
+                    <div class="text-[11px] text-slate-500 dark:text-slate-400">Máy B · LXC 111</div>
+                  </div>
+                </div>
+                <span id="radio-badge-asus" class="px-2.5 py-1 rounded-full text-[11px] font-bold">Dự phòng</span>
+              </div>
+            </div>
+
+            <!-- Quick Accordion / Settings Pills -->
+            <div class="mt-4 space-y-2">
+              <!-- Priority Setting Accordion -->
+              <div class="rounded-2xl bg-slate-50 dark:bg-ha-subDark/80 border border-slate-200/60 dark:border-slate-700/50 overflow-hidden">
+                <button type="button" onclick="toggleAccordion('priority-panel')" class="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/50 transition">
+                  <span>Cài đặt ưu tiên</span>
+                  <span class="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-medium">
+                    <span id="priority-label">Proxmox3 · Tự trở về bật</span>
+                    <svg id="priority-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v12m6-6H6"/></svg>
+                  </span>
+                </button>
+                <div id="priority-panel" class="hidden px-3.5 pb-3 pt-1 border-t border-slate-200/50 dark:border-slate-700/50 text-xs space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-500 dark:text-slate-400">Máy ưu tiên chính:</span>
+                    <select onchange="updatePriorityLabel(this.value)" class="bg-white dark:bg-ha-cardDark border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-1 font-semibold text-slate-800 dark:text-slate-200 focus:outline-none">
+                      <option value="Proxmox3 · Tự trở về bật">Proxmox3 (Mặc định)</option>
+                      <option value="Asus PVE · Tự trở về bật">Asus PVE</option>
+                      <option value="Không ưu tiên · Giữ nguyên">Không ưu tiên</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Slack Notification Pill -->
+              <div onclick="toggleSlackNotify()" class="cursor-pointer rounded-2xl bg-slate-50 dark:bg-ha-subDark/80 border border-slate-200/60 dark:border-slate-700/50 px-3.5 py-2.5 flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/50 transition">
+                <span class="flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500" id="slack-dot"></span>
+                  Thông báo Slack
+                </span>
+                <span id="slack-status-text" class="text-emerald-600 dark:text-emerald-400 font-bold">Đang bật</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Failover Pipeline Mini Indicator + Action Buttons -->
+          <div class="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
+            <!-- 3-step live pipeline pill -->
+            <div class="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-100/80 dark:bg-ha-subDark text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-3">
+              <span id="pipe-step-1" class="transition-colors">1. Đồng bộ trước</span>
+              <span>→</span>
+              <span id="pipe-step-2" class="transition-colors">2. Chốt dữ liệu</span>
+              <span>→</span>
+              <span id="pipe-step-3" class="transition-colors">3. Bàn giao</span>
+            </div>
+
+            <p id="failover-hint-text" class="text-[11px] text-slate-500 dark:text-slate-400 mb-3">
+              Đang chọn máy đang phục vụ. Chọn máy còn lại khi bạn muốn bàn giao ngay.
+            </p>
+
+            <div class="grid grid-cols-2 gap-2.5">
+              <button type="button" onclick="triggerResyncStandby()" id="btn-resync" class="px-3.5 py-2.5 rounded-2xl text-xs font-bold border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center justify-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                <span>Đồng bộ lại dự phòng</span>
+              </button>
+
+              <button type="button" onclick="executeFailover()" id="btn-handover" disabled class="px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 bg-sky-500/35 text-white cursor-not-allowed">
+                <span>Bàn giao ngay</span>
+                <span>→</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- HÀNG 3: BENTO GRID TIMELINE & TIẾN TRÌNH (2 CỘT) -->
+      <section class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        
+        <!-- Card Trái (7/12): Tự động tiếp quản (Horizontal Stepper) -->
+        <div class="lg:col-span-7 mushroom-card bg-white dark:bg-ha-cardDark border border-emerald-500/30 dark:border-emerald-500/25 shadow-mushroom dark:shadow-mushroom-dark p-5 sm:p-6 flex flex-col justify-between">
+          <div>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div class="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  <span id="takeover-route">Asus PVE → Proxmox3</span>
+                </div>
+                <h3 class="text-lg font-extrabold text-slate-900 dark:text-white mt-0.5">Tự động tiếp quản</h3>
+              </div>
+              <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold tracking-wide bg-emerald-500/12 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                ĐANG PHỤC VỤ
+              </span>
+            </div>
+            <p id="takeover-desc" class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1.5">
+              Proxmox3 đã nhận vai trò active và đang phục vụ qua domain Immich.
+            </p>
+
+            <!-- Modern Mushroom Horizontal Stepper (5 Steps) -->
+            <div class="mt-6 grid grid-cols-1 sm:grid-cols-5 gap-3 sm:gap-2 relative">
+              <!-- Step 1 -->
+              <div class="relative flex sm:flex-col items-start sm:items-start gap-3 sm:gap-2">
+                <div class="flex items-center w-full">
+                  <div class="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-500/30">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                  </div>
+                  <div class="hidden sm:block h-1 flex-1 bg-emerald-500 rounded-full ml-2"></div>
+                </div>
+                <div>
+                  <p class="text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug">Phát hiện sự cố</p>
+                  <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">15:33:17 17-11</p>
+                </div>
+              </div>
+
+              <!-- Step 2 -->
+              <div class="relative flex sm:flex-col items-start sm:items-start gap-3 sm:gap-2">
+                <div class="flex items-center w-full">
+                  <div class="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-500/30">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                  </div>
+                  <div class="hidden sm:block h-1 flex-1 bg-emerald-500 rounded-full ml-2"></div>
+                </div>
+                <div>
+                  <p class="text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug">Đã bàn giao quyền</p>
+                  <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">15:38:17 17-11</p>
+                </div>
+              </div>
+
+              <!-- Step 3 -->
+              <div class="relative flex sm:flex-col items-start sm:items-start gap-3 sm:gap-2">
+                <div class="flex items-center w-full">
+                  <div class="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-500/30">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                  </div>
+                  <div class="hidden sm:block h-1 flex-1 bg-emerald-500 rounded-full ml-2"></div>
+                </div>
+                <div>
+                  <p class="text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug">Immich sẵn sàng</p>
+                  <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">15:38:46 17-11</p>
+                </div>
+              </div>
+
+              <!-- Step 4 -->
+              <div class="relative flex sm:flex-col items-start sm:items-start gap-3 sm:gap-2">
+                <div class="flex items-center w-full">
+                  <div class="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-500/30">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                  </div>
+                  <div class="hidden sm:block h-1 flex-1 bg-emerald-500 rounded-full ml-2"></div>
+                </div>
+                <div>
+                  <p class="text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug">Đang phục vụ ứng dụng</p>
+                  <p class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium mt-0.5">Hoạt động ổn định</p>
+                </div>
+              </div>
+
+              <!-- Step 5 -->
+              <div class="relative flex sm:flex-col items-start sm:items-start gap-3 sm:gap-2">
+                <div class="flex items-center w-full">
+                  <div class="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-500/30">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                  </div>
+                </div>
+                <div>
+                  <p class="text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug">Máy cũ sẵn sàng dự phòng</p>
+                  <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">Đã đồng bộ</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Status Callout -->
+          <div class="mt-6 pt-3.5 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span id="takeover-footer-note">Asus PVE đã sẵn sàng dự phòng.</span>
+          </div>
+        </div>
+
+        <!-- Card Phải (5/12): Tiến trình gần nhất · Tự chuẩn bị máy dự phòng (Vertical Timeline) -->
+        <div class="lg:col-span-5 mushroom-card bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800/80 shadow-mushroom dark:shadow-mushroom-dark p-5 sm:p-6">
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Tiến trình</span>
+              <h3 class="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white mt-0.5">Gần nhất · Tự chuẩn bị máy dự phòng</h3>
+            </div>
+            <span class="px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-emerald-500/12 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 shrink-0">
+              HOÀN TẤT
+            </span>
+          </div>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Thao tác đã kết thúc: Proxmox3 → Asus PVE. Đây không phải tiến trình tự tiếp quản hiện tại.
+          </p>
+
+          <!-- Vertical Timeline (6 Steps) -->
+          <div class="mt-4 space-y-3 relative before:content-[''] before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-0.5 before:bg-emerald-500/25">
+            
+            <div class="relative flex items-center justify-between gap-3 pl-7">
+              <span class="absolute left-0 w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-4 ring-white dark:ring-ha-cardDark">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </span>
+              <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">Giữ bản khôi phục trên máy đích</span>
+              <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 shrink-0">Asus PVE</span>
+            </div>
+
+            <div class="relative flex items-center justify-between gap-3 pl-7">
+              <span class="absolute left-0 w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-4 ring-white dark:ring-ha-cardDark">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </span>
+              <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">Chuẩn bị chiều nhận dữ liệu</span>
+              <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 shrink-0">Asus PVE</span>
+            </div>
+
+            <div class="relative flex items-center justify-between gap-3 pl-7">
+              <span class="absolute left-0 w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-4 ring-white dark:ring-ha-cardDark">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </span>
+              <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">Thiết lập nguồn đồng bộ chính xác</span>
+              <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">Proxmox3</span>
+            </div>
+
+            <div class="relative flex items-center justify-between gap-3 pl-7">
+              <span class="absolute left-0 w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-4 ring-white dark:ring-ha-cardDark">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </span>
+              <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">Tạo bản sao database và danh mục tệp</span>
+              <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">Proxmox3</span>
+            </div>
+
+            <div class="relative flex items-center justify-between gap-3 pl-7">
+              <span class="absolute left-0 w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-4 ring-white dark:ring-ha-cardDark">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </span>
+              <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">Đồng bộ và khôi phục trên máy đích</span>
+              <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 shrink-0">Asus PVE</span>
+            </div>
+
+            <div class="relative flex items-center justify-between gap-3 pl-7">
+              <span class="absolute left-0 w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center ring-4 ring-white dark:ring-ha-cardDark">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </span>
+              <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">Kiểm tra Immich máy đích</span>
+              <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 shrink-0">Asus PVE</span>
+            </div>
+
+          </div>
+        </div>
+
+      </section>
+
+      <!-- HÀNG 4: SYSTEM PARAMETERS STRIP (4 MUSHROOM MINI ENTITY TILES) -->
+      <section aria-label="Thông số hệ thống" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div class="mushroom-card bg-white/80 dark:bg-ha-cardDark/80 border border-slate-200/60 dark:border-slate-800/80 px-4 py-3.5 flex items-center gap-3">
+          <div class="w-9 h-9 rounded-full bg-slate-100 dark:bg-ha-subDark text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v5l3 2"/></svg>
+          </div>
+          <div>
+            <div class="text-xs font-bold text-slate-800 dark:text-slate-200">Heartbeat</div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">60 giây / lần</div>
+          </div>
+        </div>
+
+        <div class="mushroom-card bg-white/80 dark:bg-ha-cardDark/80 border border-slate-200/60 dark:border-slate-800/80 px-4 py-3.5 flex items-center gap-3">
+          <div class="w-9 h-9 rounded-full bg-slate-100 dark:bg-ha-subDark text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          </div>
+          <div>
+            <div class="text-xs font-bold text-slate-800 dark:text-slate-200">Database</div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Mỗi giờ · giữ 7 ngày</div>
+          </div>
+        </div>
+
+        <div class="mushroom-card bg-white/80 dark:bg-ha-cardDark/80 border border-slate-200/60 dark:border-slate-800/80 px-4 py-3.5 flex items-center gap-3">
+          <div class="w-9 h-9 rounded-full bg-slate-100 dark:bg-ha-subDark text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+          </div>
+          <div>
+            <div class="text-xs font-bold text-slate-800 dark:text-slate-200">Đồng bộ ảnh</div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Một chiều từ máy active</div>
+          </div>
+        </div>
+
+        <div class="mushroom-card bg-white/80 dark:bg-ha-cardDark/80 border border-slate-200/60 dark:border-slate-800/80 px-4 py-3.5 flex items-center gap-3">
+          <div class="w-9 h-9 rounded-full bg-slate-100 dark:bg-ha-subDark text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          </div>
+          <div>
+            <div class="text-xs font-bold text-slate-800 dark:text-slate-200">Khi máy cũ trở lại</div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Tự đồng bộ thành dự phòng</div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 2: ĐIỀU PHỐI (ORCHESTRATION VIEW - MUSHROOM BENTO)                -->
+    <!-- ===================================================================== -->
+    <section id="view-orchestration" class="hidden space-y-4">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <!-- Rule Card 1 -->
+        <div class="mushroom-card bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800 p-6 shadow-mushroom">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-11 h-11 rounded-full bg-sky-500/15 text-sky-600 dark:text-sky-400 flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-slate-900 dark:text-white">Ngưỡng phát hiện sự cố</h3>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Tự động kích hoạt tiếp quản</p>
+            </div>
+          </div>
+          <div class="space-y-3 text-xs">
+            <div class="flex justify-between p-3 rounded-2xl bg-slate-50 dark:bg-ha-subDark">
+              <span class="text-slate-500 dark:text-slate-400">Số lần mất Heartbeat liên tiếp</span>
+              <span class="font-bold text-slate-900 dark:text-white">3 lần (180 giây)</span>
+            </div>
+            <div class="flex justify-between p-3 rounded-2xl bg-slate-50 dark:bg-ha-subDark">
+              <span class="text-slate-500 dark:text-slate-400">Kiểm tra cổng API Immich</span>
+              <span class="font-bold text-emerald-600 dark:text-emerald-400">HTTP 200 /api/server/ping</span>
+            </div>
+            <div class="flex justify-between p-3 rounded-2xl bg-slate-50 dark:bg-ha-subDark">
+              <span class="text-slate-500 dark:text-slate-400">Cơ chế định tuyến Domain</span>
+              <span class="font-bold text-slate-900 dark:text-white">Cloudflare Tunnel / Reverse Proxy</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rule Card 2 -->
+        <div class="mushroom-card bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800 p-6 shadow-mushroom">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-11 h-11 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-slate-900 dark:text-white">Lịch trình đồng bộ dữ liệu</h3>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Rsync & PostgreSQL pg_dump</p>
+            </div>
+          </div>
+          <div class="space-y-3 text-xs">
+            <div class="flex justify-between p-3 rounded-2xl bg-slate-50 dark:bg-ha-subDark">
+              <span class="text-slate-500 dark:text-slate-400">Đồng bộ thư viện ảnh (Rsync)</span>
+              <span class="font-bold text-slate-900 dark:text-white">Mỗi 15 phút</span>
+            </div>
+            <div class="flex justify-between p-3 rounded-2xl bg-slate-50 dark:bg-ha-subDark">
+              <span class="text-slate-500 dark:text-slate-400">Sao lưu & nạp PostgreSQL</span>
+              <span class="font-bold text-slate-900 dark:text-white">Mỗi 60 phút</span>
+            </div>
+            <div class="flex justify-between p-3 rounded-2xl bg-slate-50 dark:bg-ha-subDark">
+              <span class="text-slate-500 dark:text-slate-400">Băng thông tối đa cho phép</span>
+              <span class="font-bold text-sky-600 dark:text-sky-400">Không giới hạn (LAN 1Gbps)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rule Card 3 -->
+        <div class="mushroom-card bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800 p-6 shadow-mushroom flex flex-col justify-between">
+          <div>
+            <div class="flex items-center gap-3 mb-4">
+              <div class="w-11 h-11 rounded-full bg-purple-500/15 text-purple-600 dark:text-purple-400 flex items-center justify-center">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+              </div>
+              <div>
+                <h3 class="text-base font-bold text-slate-900 dark:text-white">Cảnh báo & Kiểm thử</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Tích hợp Webhook Slack</p>
+              </div>
+            </div>
+            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Mọi sự kiện chuyển quyền phục vụ, lỗi đồng bộ database hoặc máy chủ mất kết nối sẽ được gửi tức thì về kênh <strong class="text-slate-800 dark:text-slate-200">#immich-alerts</strong>.
+            </p>
+          </div>
+          <button onclick="showToast('Đã gửi thông báo kiểm thử thành công tới Slack #immich-alerts!', 'success')" class="mt-5 w-full py-2.5 px-4 rounded-2xl bg-purple-500 hover:bg-purple-600 text-white text-xs font-bold transition shadow-sm">
+            Gửi tin nhắn kiểm thử Slack
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 3: LỊCH SỬ HOẠT ĐỘNG (ACTIVITY LOGS - MUSHROOM TIMELINE CARDS)    -->
+    <!-- ===================================================================== -->
+    <section id="view-history" class="hidden space-y-4">
+      <div class="mushroom-card bg-white dark:bg-ha-cardDark border border-slate-200/60 dark:border-slate-800 p-6 shadow-mushroom">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+          <div>
+            <h2 class="text-lg font-extrabold text-slate-900 dark:text-white">Nhật ký điều phối & đồng bộ</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Ghi nhận tự động các sự kiện chuyển quyền và sao lưu dữ liệu gần đây.</p>
+          </div>
+          <span class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 dark:bg-ha-subDark text-slate-600 dark:text-slate-300">
+            Hiển thị 5 sự kiện gần nhất
+          </span>
+        </div>
+
+        <div id="activity-log-list" class="space-y-3">
+          <div class="p-4 rounded-2xl bg-slate-50 dark:bg-ha-subDark/80 border border-slate-200/50 dark:border-slate-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="flex items-start gap-3.5">
+              <div class="w-10 h-10 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-bold text-slate-900 dark:text-white">Đồng bộ Database & Thư viện định kỳ</span>
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">THÀNH CÔNG</span>
+                </div>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Proxmox3 → Asus PVE · Nạp bản dump PostgreSQL 16.16 thành công (112,7 GiB).</p>
+              </div>
+            </div>
+            <span class="text-xs font-semibold text-slate-400 shrink-0">08:47:37 18-11</span>
+          </div>
+
+          <div class="p-4 rounded-2xl bg-slate-50 dark:bg-ha-subDark/80 border border-slate-200/50 dark:border-slate-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="flex items-start gap-3.5">
+              <div class="w-10 h-10 rounded-full bg-sky-500/15 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0 mt-0.5">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+              </div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-bold text-slate-900 dark:text-white">Tự động tiếp quản dịch vụ (Auto Failover)</span>
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/12 text-sky-600 dark:text-sky-400">HOÀN TẤT</span>
+                </div>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Asus PVE → Proxmox3 · Hoàn tất bàn giao quyền phục vụ trong 5 phút 29 giây.</p>
+              </div>
+            </div>
+            <span class="text-xs font-semibold text-slate-400 shrink-0">15:38:46 17-11</span>
+          </div>
+
+          <div class="p-4 rounded-2xl bg-slate-50 dark:bg-ha-subDark/80 border border-slate-200/50 dark:border-slate-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="flex items-start gap-3.5">
+              <div class="w-10 h-10 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+              </div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-bold text-slate-900 dark:text-white">Phát hiện gián đoạn kết nối trên Asus PVE</span>
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/12 text-amber-600 dark:text-amber-400">CẢNH BÁO</span>
+                </div>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Mất tín hiệu Heartbeat từ 192.0.2.20. Kích hoạt quy trình chuyển quyền sang Proxmox3.</p>
+              </div>
+            </div>
+            <span class="text-xs font-semibold text-slate-400 shrink-0">15:33:17 17-11</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Minimal Footer (Home Assistant Style) -->
+    <footer class="mt-6 pt-4 border-t border-slate-200/60 dark:border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-400 dark:text-slate-500">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span class="font-medium text-slate-600 dark:text-slate-400">Một thư viện, hai server</span>
+        <span>·</span>
+        <span>immich.example.org</span>
+      </div>
+      <div>Thời gian hiển thị theo giờ Việt Nam · Dữ liệu cập nhật mỗi phút</div>
+    </footer>
+
+  </div>
+
+  <script>
+    // =========================================================================
+    // STATE MANAGEMENT
+    // =========================================================================
+    const state = {
+      activeServer: 'proxmox3', // 'proxmox3' | 'asus'
+      selectedRadio: 'proxmox3',
+      autoFailover: true,
+      autoStandby: true,
+      slackEnabled: true,
+      servers: {
+        proxmox3: {
+          id: 'proxmox3',
+          name: 'Proxmox3',
+          subtitle: 'Máy A · LXC 113 · Máy ưu tiên',
+          ip: '192.0.2.10',
+          immichVer: 'Immich 3.4.1',
+          pgVer: 'PostgreSQL 16.16',
+          usedGiB: '160,1',
+          totalGiB: '915,8 GiB',
+          percent: 17,
+          freeGiB: '755,7 GiB',
+          memory: '—',
+          dbLabel: 'Dump trên máy này',
+          dbTime: '08:45:41 18-11',
+          internalStatus: 'Đang chạy',
+          orchestratorStatus: 'Đã kết nối',
+          heartbeat: '08:52:07 18-11',
+          maintenance: false
+        },
+        asus: {
+          id: 'asus',
+          name: 'Asus PVE',
+          subtitle: 'Máy B · LXC 111',
+          ip: '192.0.2.20',
+          immichVer: 'Immich 3.4.1',
+          pgVer: 'PostgreSQL 16.16',
+          usedGiB: '112,7',
+          totalGiB: '915,8 GiB',
+          percent: 12,
+          freeGiB: '803,1 GiB',
+          memory: '—',
+          dbLabel: 'Database đã nạp',
+          dbTime: '08:47:37 18-11',
+          internalStatus: 'Đang chạy',
+          orchestratorStatus: 'Đã kết nối',
+          heartbeat: '08:52:08 18-11',
+          maintenance: false
+        }
+      }
+    };
+
+    // =========================================================================
+    // RENDER SERVER CARDS (MUSHROOM TILE CARD STYLE)
+    // =========================================================================
+    function renderServerCards() {
+      const container = document.getElementById('server-cards-container');
+      const order = ['proxmox3', 'asus'];
+
+      container.innerHTML = order.map(key => {
+        const srv = state.servers[key];
+        const isActive = state.activeServer === key;
+        const isMaint = srv.maintenance;
+
+        // Styling tokens based on Active vs Standby
+        const cardBorder = isActive
+          ? 'border-emerald-500/50 dark:border-emerald-500/40 shadow-active-glow'
+          : 'border-slate-200/70 dark:border-slate-800/80 shadow-mushroom dark:shadow-mushroom-dark';
+
+        const iconBg = isMaint
+          ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+          : isActive
+            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+            : 'bg-sky-500/15 text-sky-600 dark:text-sky-400';
+
+        const badgeHtml = isMaint
+          ? `<span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400">
+               <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Đang bảo trì
+             </span>`
+          : isActive
+            ? `<span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>Đang phục vụ
+               </span>`
+            : `<span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-100 dark:bg-ha-subDark text-slate-600 dark:text-slate-300">
+                 Dự phòng · sẵn sàng
+               </span>`;
+
+        const barColor = isActive ? 'bg-emerald-500' : 'bg-sky-500';
+        const barBg = isActive ? 'bg-emerald-500/15' : 'bg-sky-500/15';
+
+        return `
+          <article class="mushroom-card bg-white dark:bg-ha-cardDark border ${cardBorder} p-5 sm:p-6 flex flex-col justify-between">
+            <div>
+              <!-- Card Header -->
+              <div class="flex items-start justify-between gap-3">
+                <div class="flex items-center gap-3.5">
+                  <div class="w-12 h-12 rounded-[18px] ${iconBg} flex items-center justify-center shrink-0">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <rect x="3" y="4" width="18" height="6" rx="2"/>
+                      <rect x="3" y="14" width="18" height="6" rx="2"/>
+                      <line x1="7" y1="7" x2="7.01" y2="7" stroke-width="2.5" stroke-linecap="round"/>
+                      <line x1="7" y1="17" x2="7.01" y2="17" stroke-width="2.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <div>
+                    <h2 class="text-lg font-extrabold text-slate-900 dark:text-white leading-tight">${srv.name}</h2>
+                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">${srv.subtitle}</p>
+                  </div>
+                </div>
+                ${badgeHtml}
+              </div>
+
+              <!-- Network & Version Compact Pills -->
+              <div class="mt-4 flex flex-wrap items-center gap-1.5">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-ha-subDark text-slate-700 dark:text-slate-200">
+                  <span class="w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-sky-500'}"></span>
+                  ${srv.ip}
+                </span>
+                <span class="px-2.5 py-1 rounded-xl text-xs font-medium bg-slate-100/80 dark:bg-ha-subDark/80 text-slate-600 dark:text-slate-300">
+                  ${srv.immichVer}
+                </span>
+                <span class="px-2.5 py-1 rounded-xl text-xs font-medium bg-slate-100/80 dark:bg-ha-subDark/80 text-slate-600 dark:text-slate-300">
+                  ${srv.pgVer}
+                </span>
+              </div>
+
+              <!-- Mushroom Slider / Storage Progress Bar -->
+              <div class="mt-5 p-3.5 rounded-tile bg-slate-50/90 dark:bg-ha-subDark/70 border border-slate-200/50 dark:border-slate-700/40">
+                <div class="flex items-baseline justify-between gap-2 mb-2">
+                  <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">Ổ lưu trữ thư viện</span>
+                  <span class="text-xs font-bold text-slate-900 dark:text-white">
+                    ${srv.usedGiB} <span class="font-normal text-slate-400">/ ${srv.totalGiB}</span>
+                  </span>
+                </div>
+                <!-- Thick Mushroom Bar -->
+                <div class="w-full h-3 rounded-full ${barBg} overflow-hidden">
+                  <div class="h-full ${barColor} rounded-full transition-all duration-500" style="width: ${srv.percent}%"></div>
+                </div>
+                <div class="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+                  <span class="font-semibold">${srv.percent}% đã dùng</span>
+                  <span>Còn ${srv.freeGiB}</span>
+                </div>
+              </div>
+
+              <!-- 2x2 Mini Entity Tiles Grid -->
+              <div class="mt-3.5 grid grid-cols-2 gap-2.5">
+                <div class="p-3 rounded-2xl bg-slate-50/80 dark:bg-ha-subDark/60 border border-slate-200/40 dark:border-slate-800">
+                  <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Bộ nhớ</div>
+                  <div class="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1">${srv.memory}</div>
+                </div>
+
+                <div class="p-3 rounded-2xl bg-slate-50/80 dark:bg-ha-subDark/60 border border-slate-200/40 dark:border-slate-800">
+                  <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">${srv.dbLabel}</div>
+                  <div class="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1">${srv.dbTime}</div>
+                </div>
+
+                <div class="p-3 rounded-2xl bg-slate-50/80 dark:bg-ha-subDark/60 border border-slate-200/40 dark:border-slate-800">
+                  <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Immich nội bộ</div>
+                  <div class="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1 flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full ${isMaint ? 'bg-amber-500' : 'bg-emerald-500'}"></span>
+                    ${isMaint ? 'Tạm dừng' : srv.internalStatus}
+                  </div>
+                </div>
+
+                <div class="p-3 rounded-2xl bg-slate-50/80 dark:bg-ha-subDark/60 border border-slate-200/40 dark:border-slate-800">
+                  <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Kết nối điều phối</div>
+                  <div class="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1">${srv.orchestratorStatus}</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Footer Card -->
+            <div class="mt-4 pt-3.5 border-t border-slate-100 dark:border-slate-800">
+              <div class="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-3">
+                <span class="flex items-center gap-1.5 font-medium">
+                  <span class="w-2 h-2 rounded-full ${isMaint ? 'bg-amber-500' : 'bg-emerald-500'}"></span>
+                  ${isMaint ? 'Đang khóa đồng bộ' : 'Thư viện đã đồng bộ'}
+                </span>
+                <span>Heartbeat ${srv.heartbeat}</span>
+              </div>
+
+              <div class="flex items-center justify-between gap-2.5">
+                <button type="button" onclick="handleMaintenanceClick('${key}')" class="px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 ${
+                  isMaint
+                    ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600'
+                    : 'bg-white dark:bg-ha-subDark border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-slate-300 dark:hover:border-slate-600'
+                }">
+                  ${isMaint ? 'Thoát bảo trì' : 'Bảo trì máy này'}
+                </button>
+                <span class="text-[11px] text-slate-400 dark:text-slate-500 text-right leading-tight">
+                  ${isActive ? 'Bàn giao sang máy dự phòng trước khi bảo trì.' : 'Tạm dừng dịch vụ, đồng bộ và quyền tiếp quản.'}
+                </span>
+              </div>
+            </div>
+          </article>
+        `;
+      }).join('');
+    }
+
+    // =========================================================================
+    // FAILOVER CONTROL & RADIO SELECTION
+    // =========================================================================
+    function updateFailoverPanelUI() {
+      const activeSrv = state.servers[state.activeServer];
+      const standbyKey = state.activeServer === 'proxmox3' ? 'asus' : 'proxmox3';
+      const standbySrv = state.servers[standbyKey];
+
+      // Update Quick Status Tiles (Row 1)
+      document.getElementById('quick-active-name').textContent = activeSrv.name;
+      document.getElementById('quick-standby-name').textContent = standbySrv.name;
+
+      // Update Summary Pill
+      document.getElementById('role-summary-pill').textContent = `Đang phục vụ: ${activeSrv.name} · Dự phòng: ${standbySrv.name}`;
+
+      // Update Radio Cards
+      ['proxmox3', 'asus'].forEach(key => {
+        const card = document.getElementById(`radio-card-${key}`);
+        const dot = document.getElementById(`radio-dot-${key}`);
+        const badge = document.getElementById(`radio-badge-${key}`);
+        const isSelected = state.selectedRadio === key;
+        const isCurrentlyActive = state.activeServer === key;
+
+        if (isSelected) {
+          card.className = 'cursor-pointer rounded-tile p-3.5 border-2 border-sky-500 bg-sky-500/8 dark:bg-sky-500/12 transition-all flex items-center justify-between';
+          dot.className = 'w-5 h-5 rounded-full border-2 border-sky-500 text-sky-500 flex items-center justify-center';
+          dot.innerHTML = '<div class="w-2.5 h-2.5 rounded-full bg-sky-500"></div>';
+        } else {
+          card.className = 'cursor-pointer rounded-tile p-3.5 border-2 border-slate-200/70 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 transition-all flex items-center justify-between';
+          dot.className = 'w-5 h-5 rounded-full border-2 border-slate-300 dark:border-slate-600 flex items-center justify-center';
+          dot.innerHTML = '';
+        }
+
+        if (isCurrentlyActive) {
+          badge.textContent = 'Đang phục vụ';
+          badge.className = 'px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400';
+        } else {
+          badge.textContent = 'Dự phòng';
+          badge.className = 'px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 dark:bg-ha-subDark text-slate-500 dark:text-slate-400';
+        }
+      });
+
+      // Enable / Disable Handover Button
+      const handoverBtn = document.getElementById('btn-handover');
+      const hintText = document.getElementById('failover-hint-text');
+
+      if (state.selectedRadio !== state.activeServer) {
+        const targetName = state.servers[state.selectedRadio].name;
+        handoverBtn.disabled = false;
+        handoverBtn.className = 'px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 bg-sky-500 hover:bg-sky-600 text-white shadow-md shadow-sky-500/25 cursor-pointer';
+        hintText.innerHTML = `Sẵn sàng bàn giao quyền phục vụ sang <strong class="text-sky-600 dark:text-sky-400">${targetName}</strong>.`;
+      } else {
+        handoverBtn.disabled = true;
+        handoverBtn.className = 'px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 bg-sky-500/35 text-white cursor-not-allowed';
+        hintText.textContent = 'Đang chọn máy đang phục vụ. Chọn máy còn lại khi bạn muốn bàn giao ngay.';
+      }
+    }
+
+    function selectTargetServer(key) {
+      state.selectedRadio = key;
+      updateFailoverPanelUI();
+    }
+
+    // =========================================================================
+    // SIMULATED 3-STEP FAILOVER EXECUTION
+    // =========================================================================
+    function executeFailover() {
+      if (state.selectedRadio === state.activeServer) return;
+      const targetKey = state.selectedRadio;
+      const targetSrv = state.servers[targetKey];
+      const oldSrv = state.servers[state.activeServer];
+
+      if (targetSrv.maintenance) {
+        showToast(`Không thể bàn giao: ${targetSrv.name} đang ở chế độ bảo trì!`, 'warning');
+        return;
+      }
+
+      const btn = document.getElementById('btn-handover');
+      btn.disabled = true;
+      btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg><span>Đang bàn giao...</span>`;
+
+      const s1 = document.getElementById('pipe-step-1');
+      const s2 = document.getElementById('pipe-step-2');
+      const s3 = document.getElementById('pipe-step-3');
+
+      // Step 1
+      s1.className = 'text-sky-600 dark:text-sky-400 font-extrabold';
+      showToast(`Bước 1/3: Đồng bộ dữ liệu cuối từ ${oldSrv.name}...`, 'info');
+
+      setTimeout(() => {
+        // Step 2
+        s1.className = 'text-emerald-600 dark:text-emerald-400 font-bold';
+        s2.className = 'text-sky-600 dark:text-sky-400 font-extrabold';
+        showToast(`Bước 2/3: Chốt database PostgreSQL 16.16 trên ${targetSrv.name}...`, 'info');
+      }, 900);
+
+      setTimeout(() => {
+        // Step 3
+        s2.className = 'text-emerald-600 dark:text-emerald-400 font-bold';
+        s3.className = 'text-sky-600 dark:text-sky-400 font-extrabold';
+      }, 1800);
+
+      setTimeout(() => {
+        // Complete Swap
+        s3.className = 'text-emerald-600 dark:text-emerald-400 font-bold';
+        state.activeServer = targetKey;
+        state.selectedRadio = targetKey;
+
+        const nowStr = getCurrentTimeStr();
+        document.getElementById('quick-updated-time').textContent = nowStr;
+        state.servers[targetKey].heartbeat = nowStr;
+        state.servers[oldSrv.id].heartbeat = nowStr;
+
+        // Update Row 3 Takeover Card
+        document.getElementById('takeover-route').textContent = `${oldSrv.name} → ${targetSrv.name}`;
+        document.getElementById('takeover-desc').textContent = `${targetSrv.name} đã nhận vai trò active và đang phục vụ qua domain Immich.`;
+        document.getElementById('takeover-footer-note').textContent = `${oldSrv.name} đã sẵn sàng dự phòng.`;
+
+        renderServerCards();
+        updateFailoverPanelUI();
+        btn.innerHTML = `<span>Bàn giao ngay</span><span>→</span>`;
+
+        // Prepend to Activity Log
+        prependActivityLog(
+          `Bàn giao quyền phục vụ thủ công (${oldSrv.name} → ${targetSrv.name})`,
+          `Chuyển đổi vai trò thành công. ${targetSrv.name} đang phục vụ domain Immich.`,
+          nowStr
+        );
+
+        showToast(`Hoàn tất! ${targetSrv.name} hiện đang phục vụ hệ thống Immich.`, 'success');
+
+        setTimeout(() => {
+          s1.className = 'transition-colors';
+          s2.className = 'transition-colors';
+          s3.className = 'transition-colors';
+        }, 2500);
+      }, 2600);
+    }
+
+    function triggerResyncStandby() {
+      const standbyKey = state.activeServer === 'proxmox3' ? 'asus' : 'proxmox3';
+      const standbySrv = state.servers[standbyKey];
+      const activeSrv = state.servers[state.activeServer];
+
+      showToast(`Đang chạy đồng bộ lại dự phòng (${activeSrv.name} → ${standbySrv.name})...`, 'info');
+      setTimeout(() => {
+        const nowStr = getCurrentTimeStr();
+        standbySrv.dbTime = nowStr;
+        standbySrv.heartbeat = nowStr;
+        renderServerCards();
+        showToast(`Đã đồng bộ xong dữ liệu sang ${standbySrv.name}!`, 'success');
+      }, 1200);
+    }
+
+    // =========================================================================
+    // MAINTENANCE MODE MODAL
+    // =========================================================================
+    function handleMaintenanceClick(key) {
+      const srv = state.servers[key];
+      const isActive = state.activeServer === key;
+
+      if (isActive && !srv.maintenance) {
+        showToast(`Vui lòng bàn giao quyền phục vụ sang máy dự phòng trước khi bảo trì ${srv.name}!`, 'warning');
+        return;
+      }
+
+      if (!srv.maintenance) {
+        openModal(
+          `Đưa ${srv.name} vào chế độ bảo trì?`,
+          `Hệ thống sẽ tạm dừng dịch vụ Immich nội bộ, khóa đồng bộ tự động và vô hiệu hóa quyền tự tiếp quản của ${srv.name} cho đến khi bạn tắt bảo trì.`,
+          () => {
+            srv.maintenance = true;
+            renderServerCards();
+            showToast(`${srv.name} đã chuyển sang trạng thái Bảo trì.`, 'warning');
+          }
+        );
+      } else {
+        srv.maintenance = false;
+        renderServerCards();
+        showToast(`${srv.name} đã thoát chế độ bảo trì và sẵn sàng dự phòng.`, 'success');
+      }
+    }
+
+    // =========================================================================
+    // TOGGLE SWITCHES & ACCORDION
+    // =========================================================================
+    function toggleSettingSwitch(key) {
+      state[key] = !state[key];
+      const isOn = state[key];
+      const sw = document.getElementById(`switch-${key}`);
+      const knob = document.getElementById(`knob-${key}`);
+      const label = document.getElementById(`label-${key}`);
+
+      sw.setAttribute('aria-checked', isOn);
+      if (isOn) {
+        sw.classList.remove('bg-slate-300', 'dark:bg-slate-700');
+        sw.classList.add('bg-emerald-500');
+        knob.classList.remove('translate-x-0');
+        knob.classList.add('translate-x-5');
+        label.className = 'text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 block';
+        label.textContent = key === 'autoFailover' ? 'BẬT · Failover' : 'BẬT · Đồng bộ';
+      } else {
+        sw.classList.remove('bg-emerald-500');
+        sw.classList.add('bg-slate-300', 'dark:bg-slate-700');
+        knob.classList.remove('translate-x-5');
+        knob.classList.add('translate-x-0');
+        label.className = 'text-sm font-bold text-slate-400 dark:text-slate-500 mt-0.5 block';
+        label.textContent = 'TẮT';
+      }
+
+      const name = key === 'autoFailover' ? 'Tự chuyển máy (Failover)' : 'Tự duy trì dự phòng';
+      showToast(`${name}: ${isOn ? 'ĐÃ BẬT' : 'ĐÃ TẮT'}`, isOn ? 'success' : 'info');
+    }
+
+    function toggleAccordion(panelId) {
+      const panel = document.getElementById(panelId);
+      const chev = document.getElementById('priority-chevron');
+      const isHidden = panel.classList.contains('hidden');
+      if (isHidden) {
+        panel.classList.remove('hidden');
+        chev.classList.add('rotate-45');
+      } else {
+        panel.classList.add('hidden');
+        chev.classList.remove('rotate-45');
+      }
+    }
+
+    function updatePriorityLabel(val) {
+      document.getElementById('priority-label').textContent = val;
+      showToast(`Đã cập nhật ưu tiên: ${val}`, 'success');
+    }
+
+    function toggleSlackNotify() {
+      state.slackEnabled = !state.slackEnabled;
+      const dot = document.getElementById('slack-dot');
+      const text = document.getElementById('slack-status-text');
+      if (state.slackEnabled) {
+        dot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+        text.className = 'text-emerald-600 dark:text-emerald-400 font-bold';
+        text.textContent = 'Đang bật';
+      } else {
+        dot.className = 'w-2 h-2 rounded-full bg-slate-400';
+        text.className = 'text-slate-400 font-bold';
+        text.textContent = 'Đang tắt';
+      }
+      showToast(`Thông báo Slack: ${state.slackEnabled ? 'Đang bật' : 'Đang tắt'}`, 'info');
+    }
+
+    // =========================================================================
+    // NAVIGATION TABS & THEME SWITCHER
+    // =========================================================================
+    function switchTab(tabName) {
+      const views = ['overview', 'orchestration', 'history'];
+      views.forEach(v => {
+        const viewEl = document.getElementById(`view-${v}`);
+        const btnEl = document.getElementById(`tab-btn-${v}`);
+        if (v === tabName) {
+          viewEl.classList.remove('hidden');
+          btnEl.className = 'tab-btn flex items-center gap-2 px-4 py-2 rounded-full text-xs sm:text-sm font-semibold transition-all bg-slate-900 text-white dark:bg-sky-500 dark:text-white shadow-sm';
+        } else {
+          viewEl.classList.add('hidden');
+          btnEl.className = 'tab-btn flex items-center gap-2 px-4 py-2 rounded-full text-xs sm:text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-all';
+        }
+      });
+    }
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      if (html.classList.contains('dark')) {
+        html.classList.remove('dark');
+        html.classList.add('light');
+      } else {
+        html.classList.remove('light');
+        html.classList.add('dark');
+      }
+    }
+
+    // =========================================================================
+    // HELPERS: MODAL, TOAST & TIME
+    // =========================================================================
+    let modalCallback = null;
+
+    function openModal(title, desc, onConfirm) {
+      document.getElementById('modal-title').textContent = title;
+      document.getElementById('modal-desc').textContent = desc;
+      modalCallback = onConfirm;
+
+      const modal = document.getElementById('confirm-modal');
+      const box = document.getElementById('confirm-modal-box');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+      setTimeout(() => {
+        box.classList.remove('scale-95', 'opacity-0');
+        box.classList.add('scale-100', 'opacity-100');
+      }, 10);
+    }
+
+    function closeModal() {
+      const modal = document.getElementById('confirm-modal');
+      const box = document.getElementById('confirm-modal-box');
+      box.classList.remove('scale-100', 'opacity-100');
+      box.classList.add('scale-95', 'opacity-0');
+      setTimeout(() => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }, 150);
+    }
+
+    document.getElementById('modal-confirm-btn').addEventListener('click', () => {
+      if (modalCallback) modalCallback();
+      closeModal();
+    });
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+
+      const badgeColors = {
+        success: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+        warning: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+        info: 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
+      };
+
+      const icons = {
+        success: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>',
+        warning: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/></svg>',
+        info: '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01"/></svg>'
+      };
+
+      toast.className = 'pointer-events-auto bg-white dark:bg-ha-cardDark border border-slate-200/80 dark:border-slate-700/80 shadow-xl rounded-2xl p-3.5 flex items-center gap-3 transform translate-y-2 opacity-0 transition-all duration-200';
+      toast.innerHTML = `
+        <div class="w-8 h-8 rounded-full ${badgeColors[type]} flex items-center justify-center shrink-0">
+          ${icons[type]}
+        </div>
+        <p class="text-xs font-semibold text-slate-800 dark:text-slate-100 leading-snug flex-1">${message}</p>
+      `;
+
+      container.appendChild(toast);
+      requestAnimationFrame(() => {
+        toast.classList.remove('translate-y-2', 'opacity-0');
+      });
+
+      setTimeout(() => {
+        toast.classList.add('translate-y-2', 'opacity-0');
+        setTimeout(() => toast.remove(), 220);
+      }, 3200);
+    }
+
+    function prependActivityLog(title, desc, timeStr) {
+      const list = document.getElementById('activity-log-list');
+      const item = document.createElement('div');
+      item.className = 'p-4 rounded-2xl bg-sky-500/8 dark:bg-sky-500/12 border border-sky-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3';
+      item.innerHTML = `
+        <div class="flex items-start gap-3.5">
+          <div class="w-10 h-10 rounded-full bg-sky-500/20 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0 mt-0.5">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-bold text-slate-900 dark:text-white">${title}</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-600 dark:text-sky-400">MỚI</span>
+            </div>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">${desc}</p>
+          </div>
+        </div>
+        <span class="text-xs font-semibold text-slate-400 shrink-0">${timeStr}</span>
+      `;
+      list.prepend(item);
+    }
+
+    function getCurrentTimeStr() {
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${pad(now.getDate())}-${pad(now.getMonth() + 1)}`;
+    }
+
+    // Initialize UI
+    window.addEventListener('DOMContentLoaded', () => {
+      renderServerCards();
+      updateFailoverPanelUI();
+    });
+  </script>
+</body>
+</html>

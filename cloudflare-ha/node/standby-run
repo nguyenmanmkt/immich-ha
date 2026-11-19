@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+cd /opt/immich/app
+set -a
+. /opt/immich/.env
+unset DB_URL
+DB_DATABASE_NAME=$(cat /var/lib/immich-standby/current-db)
+[[ "$DB_DATABASE_NAME" =~ ^immich_standby_[0-9_]+$ ]]
+IMMICH_MEDIA_LOCATION=/mnt/immich-storage
+if [[ $(cat /var/lib/immich-standby/role) == active ]]; then
+  unset IMMICH_WORKERS_INCLUDE IMMICH_WORKERS_EXCLUDE
+else
+  IMMICH_WORKERS_INCLUDE=api
+  IMMICH_WORKERS_EXCLUDE=
+fi
+IMMICH_HELMET_FILE=false
+IMMICH_PORT=2283
+set +a
+exec /usr/bin/node --no-warnings /opt/immich/app/dist/main.js

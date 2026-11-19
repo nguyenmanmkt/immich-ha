@@ -1,0 +1,32 @@
+#!/bin/bash
+set -euo pipefail
+cd /opt/immich/app
+mode=$(cat /var/lib/immich-ha/runtime/mode)
+case "$mode" in active|standby) ;; *) exit 0 ;; esac
+set -a
+. /opt/immich/.env
+unset DB_URL
+if [[ -f /var/lib/immich-ha/runtime/streaming-app.env ]]; then
+  . /var/lib/immich-ha/runtime/streaming-app.env
+  [[ "$mode" == active ]] || exit 0
+  # Booting a former active must not start writers before a fresh lease.
+  /usr/bin/python3 - <<'PY'
+import time
+from pathlib import Path
+assert float(Path('/run/immich-ha-stream-grant').read_text()) > time.monotonic()
+PY
+fi
+DB_DATABASE_NAME=$(cat /var/lib/immich-ha/runtime/current-db)
+[[ "$DB_DATABASE_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]
+IMMICH_HOST=127.0.0.1
+IMMICH_MEDIA_LOCATION=/mnt/immich-storage
+IMMICH_PORT=2283
+IMMICH_HELMET_FILE=false
+if [[ "$mode" == active ]]; then
+  unset IMMICH_WORKERS_INCLUDE IMMICH_WORKERS_EXCLUDE
+else
+  IMMICH_WORKERS_INCLUDE=api
+  IMMICH_WORKERS_EXCLUDE=
+fi
+set +a
+exec /usr/bin/node --no-warnings /opt/immich/app/dist/main.js

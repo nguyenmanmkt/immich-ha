@@ -1,0 +1,12 @@
+{
+  "name": "immich-cybersma-ha",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "deploy": "python tools/render-wrangler.py && python tools/embed-ui.py && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

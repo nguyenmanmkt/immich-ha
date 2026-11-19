@@ -1,0 +1,30 @@
+{
+  "workerName": "immich-ha",
+  "publicHost": "photos.example.org",
+  "adminHost": "immich-ha.example.org",
+  "origins": {
+    "primary": "https://immich-primary.example.org",
+    "backup": "https://immich-backup.example.org"
+  },
+  "nodes": {
+    "primary": {
+      "label": "Server A",
+      "host": "pve-a",
+      "ip": "192.0.2.10",
+      "containerId": 113
+    },
+    "backup": {
+      "label": "Server B",
+      "host": "pve-b",
+      "ip": "192.0.2.20",
+      "containerId": 111
+    }
+  },
+  "access": {
+    "teamDomain": "example.cloudflareaccess.com",
+    "audience": "",
+    "emails": [
+      "admin@example.org"
+    ]
+  }
+}
