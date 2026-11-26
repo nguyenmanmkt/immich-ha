@@ -51,6 +51,8 @@ Không dùng replication slot cố định; `pg_basebackup` dùng slot tạm tro
 
 ## Theo dõi
 
+PostgreSQL HA phải chờ IP Tailscale cục bộ trước khi khởi động. Bộ cài tạo drop-in `postgresql@16-ha.service.d/immich-tailnet.conf`, sắp thứ tự sau `tailscaled` và kiểm tra IP thực sự có trên `tailscale0` (tối đa 45 giây). Nếu IP chưa có, dừng lần khởi động thay vì chạy chỉ trên loopback. Runtime cũng kiểm tra điều kiện này khi start cụm HA; không tự restart database active. Nếu gặp lỗi cũ `pg_basebackup` với `Connection refused`, kiểm tra `ss -lnt 'sport = :5433'`: sau khi sửa thứ tự khởi động, cần restart có kế hoạch nếu PostgreSQL đang chạy mà thiếu listener Tailscale.
+
 ```bash
 python tools/streaming-upgrade.py status
 python admin.py status --compact

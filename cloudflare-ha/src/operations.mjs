@@ -1,4 +1,5 @@
 // Durable, serialized planned operations. Commands are fixed actions, never shell text.
+import { upgradeKind, upgradeLocked, upgradePlan, validateUpgradeResult, finishUpgrade } from './immich-upgrade.mjs';
 export const NODE_IDS = ["primary", "backup"];
 export const otherNode = (node) => node === "primary" ? "backup" : "primary";
 const terminal = new Set(["succeeded", "failed"]);
@@ -41,9 +42,12 @@ export function startOperation(state, input, now, id, eligible) {
   upgradeOperations(state);
   if (input.requestId && [state.operation, ...state.history].some((job) => job && job.requestId === input.requestId && job.actor === input.actor)) return state.operation;
   if (busy(state) || state.pending) throw new Error("Đang có một thao tác khác. Hãy chờ thao tác đó hoàn tất.");
-  if (!["prepare", "switch", "resume"].includes(input.kind)) throw new Error("Thao tác không hợp lệ");
+  const upgrading = upgradeKind(input.kind);
+  if (upgradeLocked(state) && input.kind !== 'upgrade-retry') throw new Error('Cần tiếp tục nâng cấp đang tạm dừng; không bàn giao hoặc mở lại code cũ');
+  if (!["prepare", "switch", "resume"].includes(input.kind) && !upgrading) throw new Error("Thao tác không hợp lệ");
   const source = state.owner;
-  const target = input.target;
+  const plan = upgrading ? upgradePlan(state, input, now, eligible) : null;
+  const target = plan?.target || input.target;
   if (input.kind !== "resume" && (!NODE_IDS.includes(target) || target === source)) {
     throw new Error("Máy đích phải khác máy đang active");
   }
@@ -62,10 +66,10 @@ export function startOperation(state, input, now, id, eligible) {
       throw new Error("Cần backend v2 đang online và enforcement trên cả hai máy");
     }
   }
-  if (input.kind !== "resume" && !eligible(source, true)) {
+  if (input.kind !== "resume" && input.kind !== 'upgrade-retry' && !eligible(source, true)) {
     throw new Error("Máy active chưa sẵn sàng để bắt đầu đồng bộ có kiểm soát");
   }
-  if (input.kind !== "resume") {
+  if (input.kind !== "resume" && !upgrading) {
     const a = state.heartbeats[source].metrics;
     const b = state.heartbeats[target].metrics;
     if (!!a.postgresStreaming !== !!b.postgresStreaming) {
@@ -82,10 +86,10 @@ export function startOperation(state, input, now, id, eligible) {
   }
   if (state.operation) state.history.unshift(structuredClone(state.operation));
   state.history = state.history.slice(0, 12);
-  const steps = input.kind === "resume" ? [
+  const steps = plan?.steps || (input.kind === "resume" ? [
     { node: source, action: "resume", label: "Khôi phục phục vụ trên nguồn hiện tại" },
     { action: "wait-owner", label: "Chờ xác nhận phục vụ" },
-  ] : prepareSteps(source, target);
+  ] : prepareSteps(source, target));
   if (input.kind === "switch") steps.push(
     { node: source, action: "freeze-dump", label: "Tạm dừng ghi và chốt dữ liệu cuối" },
     { node: source, action: "wait-peer", snapshotStep: 6, label: "Chờ máy đích nhận đầy đủ bản cuối" },
@@ -120,6 +124,13 @@ export function startOperation(state, input, now, id, eligible) {
     handoverVersion: state.heartbeats[source]?.metrics?.postgresStreaming ? 2 : 1,
     fastHandover: input.kind === 'switch' && [source,target].every(node => state.heartbeats[node]?.metrics?.postgresStreaming?.fastHandoverVersion === 1),
   };
+  if (plan) {
+    job.upgrade = {...plan.upgrade,stageId:plan.upgrade.stageId || id};
+    if (input.kind !== 'upgrade-stage') {
+      state.immichUpgrade = {...job.upgrade,phase:'applying',applying:true};
+      job.maintenance = input.kind === 'upgrade-retry';
+    }
+  }
   state.autoRequested ??= state.auto;
   state.auto = false;
   state.operation = job;
@@ -134,6 +145,7 @@ function finish(state, now, eligible) {
   job.maintenance = false;
   job.command = null;
   job.finishedAt = now;
+  finishUpgrade(state, job);
   state.auto = (state.autoRequested ?? job.previousAuto) && eligible(otherNode(state.owner), false);
   event(job, now, "Hoàn tất. Vai trò và chiều đồng bộ đã được xác nhận.", "success");
 }
@@ -145,6 +157,12 @@ export function failOperation(state, now, message) {
   job.error = String(message).slice(0, 1000);
   job.finishedAt = now;
   state.auto = false;
+  // The first two apply commands only verify staging. If either fails, no
+  // freeze/install has been issued: allow a new preparation, not an unsafe
+  // resume/downgrade path. Once freeze is issued, the durable lock remains.
+  if (job.upgrade && job.kind !== 'upgrade-stage' && job.index < 2 && !job.maintenance) {
+    state.immichUpgrade = {...job.upgrade,phase:'stale',applying:false};
+  }
   if (state.pending?.jobId === job.id && state.owner === job.source && state.epoch === job.sourceEpoch) state.pending = null;
   // Never reopen the old source automatically after a failed frozen handover.
   event(job, now, job.error, "error");
@@ -163,7 +181,7 @@ export function advanceOperation(state, now, eligible) {
     if (!step) { finish(state, now, eligible); return; }
     if (step.node) {
       if (!job.command) {
-        if (["freeze-dump", "freeze-wal"].includes(step.action)) job.maintenance = true;
+        if (["freeze-dump", "freeze-wal", "upgrade-freeze"].includes(step.action)) job.maintenance = true;
         job.status = "running";
         job.command = {
           id: `${job.id}-${job.index}`, jobId: job.id, index: job.index, node: step.node,
@@ -173,11 +191,21 @@ export function advanceOperation(state, now, eligible) {
           snapshot: step.snapshotStep === undefined ? null : job.results[step.snapshotStep],
           final: step.final === true,
           autoRecovery: job.autoRecovery === true,
+          ...(job.upgrade ? {upgrade:job.upgrade} : {}),
+          ...(job.upgrade && job.kind !== 'upgrade-stage' ? {upgradeBackup:job.results[3] || null} : {}),
+          ...(job.upgrade && job.kind !== 'upgrade-stage' ? {upgradeBackupCopy:job.results[4] || null} : {}),
         };
         job.progress = null;
         event(job, now, step.label, "info", step.node);
       }
       return;
+    }
+    if (step.action === 'upgrade-wait') {
+      if (state.owner !== job.source || state.epoch !== job.sourceEpoch) { failOperation(state, now, 'Quyền active thay đổi khi nâng cấp'); return; }
+      if (state.ready && eligible(job.source, true) && state.heartbeats[job.source]?.metrics?.appVersion === job.upgrade.version) {
+        job.index++;job.command=null;continue;
+      }
+      job.status='waiting-ready';return;
     }
     if (step.action === "transfer") {
       if (state.owner === job.target && state.epoch > job.sourceEpoch) {
@@ -254,6 +282,7 @@ export function operationResult(state, node, input, now, eligible) {
     failOperation(state, now, input.error || "Backend không hoàn tất được thao tác"); return;
   }
   const result = input.result || {};
+  validateUpgradeResult(job, command, result);
   if (["wal-barrier", "freeze-wal"].includes(command.action)) {
     if (result.kind !== "wal-manifest-v1" || result.commandId !== command.id || result.jobId !== command.jobId ||
         result.source !== command.source || result.epoch !== command.epoch ||

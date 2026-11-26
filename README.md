@@ -39,6 +39,7 @@ flowchart TD
 - Bàn giao nhanh khi có đủ bằng chứng nguồn đã dừng/khóa bền vững và đích đủ WAL/file. Thiếu điều kiện thì không bỏ fencing.
 - Bảo trì từng máy và thông báo Slack cấu hình trên UI.
 - Đồng bộ các backup `.sql.gz`/`.sql` gốc Immich sang máy còn lại.
+- Dashboard nâng cấp Immich theo recipe đã rà soát: staging riêng, backup cuối, xác nhận cả hai máy và khóa bàn giao khi có lỗi. Xem [quy trình nâng cấp ứng dụng](cloudflare-ha/IMMICH-UPGRADE.vi.md).
 
 ## Triển khai
 

@@ -32,7 +32,7 @@ STAGE = '''
 import json,os,pwd,re,secrets,shlex,subprocess,sys
 from pathlib import Path
 sys.path.insert(0,'/usr/local/lib/immich-ha')
-from pg_stream import clone,pg,ctl,status
+from pg_stream import clone,pg,ctl,status,install_network_guard
 c=INPUT
 assert c['node']==json.loads(Path('/etc/immich-ha/config.json').read_text())['node']
 assert not Path('/etc/immich-ha/streaming.json').exists(), 'Already staged; inspect instead of overwriting'
@@ -52,6 +52,7 @@ conf=Path('/etc/postgresql/16/ha/postgresql.conf')
 with conf.open('a') as f:f.write("\\n# Managed Immich streaming cluster\\nlisten_addresses = '127.0.0.1,"+c['local_ip']+"'\\nshared_preload_libraries='vchord.so'\\nwal_level=replica\\nwal_log_hints=on\\nfull_page_writes=on\\nhot_standby=on\\nmax_wal_senders=4\\nmax_replication_slots=4\\nwal_keep_size='512MB'\\nmax_wal_size='512MB'\\nmax_slot_wal_keep_size='512MB'\\nwal_receiver_status_interval='1s'\\nwal_sender_timeout='30s'\\nwal_receiver_timeout='30s'\\n")
 with Path('/etc/postgresql/16/ha/pg_hba.conf').open('a') as f:f.write('\\nhost replication immich_ha_repl '+c['peer_ip']+'/32 scram-sha-256\\n')
 write('/etc/immich-ha/streaming.json',json.dumps(c))
+install_network_guard()
 if c['source']:
  ctl('start')
  def literal(v):return "'"+v.replace("'","''")+"'"

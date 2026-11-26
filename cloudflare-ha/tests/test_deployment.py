@@ -12,7 +12,7 @@ import streaming_setup
 class DeploymentTests(unittest.TestCase):
     def test_importing_operational_entrypoints_does_not_connect_or_mutate(self):
         with patch.object(d,'connection') as connection,patch.object(d,'control') as control:
-            for name in ['streaming-stage-test.py','streaming-finalize.py']:
+            for name in ['streaming-stage-test.py','streaming-finalize.py','upgrade-immich-ha.py']:
                 spec=importlib.util.spec_from_file_location('entrypoint_test',d.ROOT/'tools'/name)
                 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
                 self.assertTrue(callable(module.main))

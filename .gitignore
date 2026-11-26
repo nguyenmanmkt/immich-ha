@@ -31,13 +31,3 @@ id_rsa*
 id_ed25519*
 .DS_Store
 Thumbs.db
-# Scripts and records for this installation only (not reusable installers)
-asus_host.py
-monitor-asus-hdd.py
-HDD-MIGRATION.vi.md
-ROLLOUT.vi.md
-tools/migrate-asus-copy.py
-tools/finish-asus-hdd.py
-
-/install-immich-standby.sh
-/standby-notes.md

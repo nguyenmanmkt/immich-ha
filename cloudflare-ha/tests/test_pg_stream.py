@@ -17,12 +17,50 @@ import pg_stream as pg
 
 
 class StreamingTests(unittest.TestCase):
+    def test_start_waits_for_local_tailnet_address_before_launching_postgres(self):
+        with patch.object(pg, 'wait_local_address') as wait, patch.object(pg.subprocess, 'run', return_value=Mock(returncode=0)) as run:
+            pg.ctl('start')
+            wait.assert_called_once_with()
+            run.assert_called_once()
+        with patch.object(pg, 'wait_local_address', side_effect=RuntimeError('not ready')), patch.object(pg.subprocess, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'not ready'):
+                pg.ctl('start')
+            run.assert_not_called()
+
+    def test_missing_tailnet_address_does_not_prevent_stop(self):
+        with patch.object(pg, 'wait_local_address') as wait, patch.object(pg.subprocess, 'run', return_value=Mock(returncode=0)):
+            pg.ctl('stop')
+            wait.assert_not_called()
+
+    def test_network_wait_requires_configured_ip_on_tailnet_interface(self):
+        replies = [Mock(returncode=0, stdout='[{"addr_info":[{"local":"100.64.0.99"}]}]'),
+                   Mock(returncode=0, stdout='[{"addr_info":[{"local":"100.64.0.2"}]}]')]
+        with patch.object(pg, 'configuration', return_value={'local_ip':'100.64.0.2'}), \
+                patch.object(pg.subprocess, 'run', side_effect=replies), patch.object(pg.time, 'sleep') as sleep:
+            pg.wait_local_address()
+            sleep.assert_called_once_with(1)
+
+    def test_network_wait_fails_closed_when_address_never_arrives(self):
+        with patch.object(pg, 'configuration', return_value={'local_ip':'100.64.0.2'}), \
+                patch.object(pg.subprocess, 'run', return_value=Mock(returncode=0, stdout='[]')):
+            with self.assertRaisesRegex(RuntimeError, 'Tailscale'):
+                pg.wait_local_address(timeout=0)
+
+    def test_network_dropin_is_idempotent_and_does_not_start_database(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(pg, 'NETWORK_DROP_IN', Path(tmp)/'unit.d/guard.conf'), \
+                patch.object(pg, 'configuration', return_value={'local_ip':'100.64.0.2'}), patch.object(pg.subprocess, 'run') as run:
+            self.assertTrue(pg.install_network_guard())
+            self.assertIn('After=tailscaled.service', pg.NETWORK_DROP_IN.read_text())
+            self.assertIn('wait_local_address()', pg.NETWORK_DROP_IN.read_text())
+            self.assertFalse(pg.install_network_guard())
+            run.assert_called_once_with(['systemctl','daemon-reload'], check=True, capture_output=True, timeout=30)
+
     def runtime(self):
         r = Mock()
         r.mode.return_value = 'standby'
         r.lock.return_value = contextlib.nullcontext()
         r.seed.return_value = {'source':'primary','sourceEpoch':7,'systemId':'123'}
-        r.read.return_value = '1000'
+        r.read.side_effect = lambda name, default='': '1000' if name == 'stream-last-connected' else default
         r.info.return_value = {'owner':'backup','epoch':8}
         r.node = 'backup'
         return r

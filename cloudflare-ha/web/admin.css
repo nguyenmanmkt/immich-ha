@@ -90,3 +90,15 @@ dialog{width:calc(100% - 32px);max-width:480px;border:1px solid var(--line);bord
 .backup-page-heading{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:20px}.backup-page-heading h1{font-size:23px;margin:0 0 5px}.backup-page-heading p{font-size:12px;color:var(--muted);margin:0}.backup-summary{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}.backup-summary-card{display:flex;align-items:center;gap:14px}.backup-summary-card h2{font-size:16px;margin:0 0 4px}.backup-summary-card strong{display:block;font-size:14px;color:var(--ink)}.backup-summary-card small{display:block;font-size:11px;color:var(--muted);margin-top:5px}.backup-list-panel{padding:8px 20px;overflow-x:auto}.backup-table{width:100%;border-collapse:collapse;text-align:left;font-size:12px}.backup-table th{font-size:11px;color:var(--muted);font-weight:600;padding:15px 10px;border-bottom:1px solid var(--line);white-space:nowrap}.backup-table td{padding:15px 10px;border-bottom:1px solid #edf1f5;white-space:nowrap}.backup-table tr:last-child td{border:0}.backup-filename{font-family:Consolas,monospace;font-size:11px;max-width:390px;overflow:hidden;text-overflow:ellipsis}.backup-table .small-badge{font-size:10px}.backup-list-panel #backup-list{min-width:700px}@media(max-width:620px){.backup-summary{grid-template-columns:1fr;gap:12px}.backup-page-heading{align-items:flex-start;flex-direction:column}.backup-page-heading .button{font-size:12px}.backup-summary-card{padding:18px}}
 
 #progress-panel>.transition-panel{margin-bottom:0}
+[hidden] { display: none !important; }
+.upgrade-panel { padding: 26px; }
+.upgrade-panel .panel-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:24px; }
+.upgrade-panel h2 { margin:6px 0 0; }
+.upgrade-panel .server-grid { gap:16px; margin-bottom:24px; }
+.upgrade-node { background:#f3f6fa; border-radius:20px; padding:20px; display:flex; gap:14px; align-items:center; }
+.upgrade-node strong { display:block; color:#172c43; margin-top:5px; font-size:18px; }
+.upgrade-node > svg { width:30px; height:30px; color:var(--blue); flex-shrink:0; }
+.upgrade-actions,.upgrade-buttons { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin:16px 0; }
+.upgrade-actions select { padding:10px 14px; border:1px solid #cad6e4; border-radius:12px; background:white; color:#172c43; }
+.upgrade-hint { color:#3a526b; line-height:1.6; }
+.upgrade-panel .notice { margin-top:20px; }

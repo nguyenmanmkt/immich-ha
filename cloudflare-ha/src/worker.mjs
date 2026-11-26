@@ -76,9 +76,10 @@ async function adminUI(request, env) {
       const text = await request.text();
       if (text.length > 4096) return json({ error: "Payload too large" }, 413);
       const input = JSON.parse(text);
-      if (!["set-auto", "set-recovery", "set-preference", "set-maintenance", "set-alerts", "test-alerts", "prepare", "switch", "resume"].includes(input.action)) throw new Error("Thao tác không hợp lệ");
+      if (!["set-auto", "set-recovery", "set-preference", "set-maintenance", "set-alerts", "test-alerts", "prepare", "switch", "resume", "upgrade-stage", "upgrade-apply", "upgrade-retry"].includes(input.action)) throw new Error("Thao tác không hợp lệ");
       const response = await call(env, "/admin", {
         action: input.action, target: input.target, enabled: input.enabled,
+        version: input.version,
         webhook: input.webhook, remove: input.remove === true,
         requestId: typeof input.requestId === "string" ? input.requestId.slice(0, 80) : null,
         id: crypto.randomUUID(), actor: actor.email,

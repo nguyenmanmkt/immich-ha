@@ -12,10 +12,12 @@ let alertsDirty = false;
 let timer = null;
 let loading = false;
 let submitting = false;
+let upgradeVersion = null;
 let dialogAction = null;
 let toastTimer = null;
 const expandedNodes = new Set();
 const labels = { "maintenance-start": "Bắt đầu bảo trì", "maintenance-end": "Kết thúc bảo trì", "set-preference": "Lưu máy chính ưu tiên", prepare: "Chuẩn bị & đồng bộ", switch: "Đổi máy chính / dự phòng", resume: "Khôi phục phục vụ nguồn", "set-auto": "Thay đổi tự chuyển máy", "set-recovery": "Thay đổi tự duy trì dự phòng", "auto-restored": "Bật lại tự chuyển máy", "owner-changed": "Đổi máy chính" };
+Object.assign(labels,{'upgrade-stage':'Chuẩn bị phiên bản Immich','upgrade-apply':'Nâng cấp Immich','upgrade-retry':'Tiếp tục nâng cấp Immich'});
 const terminal = (job) => !job || ["succeeded", "failed"].includes(job.status);
 const time = (value) => value ? new Intl.DateTimeFormat("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value)) : "Chưa có";
 const bytes = (value) => Number.isFinite(value) ? (value / 1024 ** 3).toLocaleString("vi-VN", { maximumFractionDigits: 1 }) + " GiB" : "—";
@@ -227,17 +229,18 @@ function renderServer(node) {
 
 function renderControls() {
   const running = !terminal(state.operation);
-  const possible = nodes.every(capable) && isHealthy(state.owner) && !running && !state.pending && !submitting && !state.nodeMaintenance?.[nodes.find((node) => node !== state.owner)]?.enabled;
-  document.querySelectorAll("[data-maintenance-node]").forEach((button) => { button.disabled = submitting || !maintenanceView(state, button.dataset.maintenanceNode).canChange; });
+  const upgradeLocked = state.immichUpgrade?.applying && state.immichUpgrade.phase !== 'completed';
+  const possible = !upgradeLocked && nodes.every(capable) && isHealthy(state.owner) && !running && !state.pending && !submitting && !state.nodeMaintenance?.[nodes.find((node) => node !== state.owner)]?.enabled;
+  document.querySelectorAll("[data-maintenance-node]").forEach((button) => { button.disabled = upgradeLocked || submitting || !maintenanceView(state, button.dataset.maintenanceNode).canChange; });
   document.querySelectorAll('[data-prepare-node]').forEach((button) => {
     button.disabled = !possible || button.dataset.prepareNode === state.owner;
   });
   document.querySelectorAll('[data-switch-node]').forEach((button) => { button.disabled = !possible || button.dataset.switchNode === state.owner; });
   $("#auto-toggle").checked = state.auto;
-  $("#auto-toggle").disabled = running || submitting || !!state.pending || (!state.auto && !state.standbyEligible);
+  $("#auto-toggle").disabled = upgradeLocked || running || submitting || !!state.pending || (!state.auto && !state.standbyEligible);
   $("#recovery-toggle").checked = state.recovery?.enabled === true;
-  $("#recovery-toggle").disabled = submitting || !state.recovery;
-  $("#preferred-node").disabled = running || submitting || !!state.pending || !!state.operation?.maintenance;
+  $("#recovery-toggle").disabled = upgradeLocked || running || submitting || !state.recovery;
+  $("#preferred-node").disabled = upgradeLocked || running || submitting || !!state.pending || !!state.operation?.maintenance;
   $("#return-toggle").disabled = $("#preferred-node").disabled || preferenceDirty;
   $("#save-preference").disabled = $("#preferred-node").disabled || !preferenceDirty;
   $("#alerts-enable").disabled = submitting || alertsDirty || !state.alerts?.configured;
@@ -246,8 +249,48 @@ function renderControls() {
   $("#test-alerts").disabled = submitting || !state.alerts?.enabled || !state.alerts?.configured || state.alerts.pending > 0;
   $("#delete-alerts").disabled = submitting || !state.alerts?.configured;
   const op = state.operation;
-  const canResume = op?.status === "failed" && op.maintenance && op.source === state.owner && op.sourceEpoch === state.epoch && !state.pending && capable(state.owner);
+  const canResume = !upgradeLocked && op?.status === "failed" && op.maintenance && op.source === state.owner && op.sourceEpoch === state.epoch && !state.pending && capable(state.owner);
   document.querySelectorAll('[data-resume-node]').forEach((button) => { button.hidden = !canResume || button.dataset.resumeNode !== state.owner; button.disabled = submitting; });
+  renderUpgrades();
+}
+
+function renderUpgrades() {
+  const recipes = state.upgradeRecipes || [];
+  upgradeVersion ||= recipes[0]?.version;
+  const recipe = recipes.find(r => r.version === upgradeVersion);
+  const select = $('#upgrade-version');select.replaceChildren();
+  for (const r of recipes) { const option=el('option','',r.version);option.value=r.version;select.append(option); }
+  select.value=upgradeVersion || '';
+  $('#upgrade-notes').hidden=!recipe;
+  if (recipe) $('#upgrade-notes').href=recipe.notesUrl;
+  const saved=state.immichUpgrade, job=state.operation;
+  const running=!terminal(job), locked=saved?.applying && saved.phase!=='completed';
+  const online=nodes.every(n=>capable(n) && state.agents[n].metrics?.immichUpgrade?.protocol===1 &&
+    (!recipe || state.agents[n].metrics.immichUpgrade.recipes?.includes(recipe.recipe)));
+  const ready=online && recipe && state.ready && state.standbyEligible && !state.pending && !running && !submitting;
+  const sameBase=recipe && nodes.every(n=>state.agents?.[n]?.metrics?.appVersion===recipe.fromVersion);
+  const prepared=saved?.phase==='prepared' && saved.source===state.owner && saved.epoch===state.epoch && saved.version===upgradeVersion;
+  select.disabled=running || locked || submitting;
+  $('#upgrade-stage').disabled=!ready || !sameBase || locked;
+  $('#upgrade-apply').disabled=!ready || !sameBase || !prepared || locked;
+  $('#upgrade-retry').hidden=!(locked && job?.status==='failed');
+  $('#upgrade-retry').disabled=!online || running || submitting;
+  const phases={prepared:'ĐÃ CHUẨN BỊ',applying:'ĐANG NÂNG CẤP',completed:'ĐÃ NÂNG CẤP',stale:'CẦN CHUẨN BỊ LẠI'};
+  $('#upgrade-phase').textContent=locked && job?.status==='failed' ? 'CẦN XỬ LÝ' : phases[saved?.phase] || (running && job.upgrade ? 'ĐANG CHUẨN BỊ' : 'CHƯA CHUẨN BỊ');
+  $('#upgrade-nodes').replaceChildren();
+  for (const n of nodes) {
+    const card=el('div','upgrade-node');card.append(icon('server'));
+    const text=el('div','',name(n));text.append(el('strong','',state.agents?.[n]?.metrics?.appVersion || 'Chưa xác nhận'));
+    card.append(text);$('#upgrade-nodes').append(card);
+  }
+  const current=recipe && nodes.every(n=>state.agents?.[n]?.metrics?.appVersion===recipe.version);
+  $('#upgrade-hint').textContent=locked ? 'Đang bảo vệ phiên nâng cấp. Nếu có lỗi, tiếp tục sửa bản mới; không tự hạ code hoặc phục hồi database.' :
+    current ? `Cả hai máy đang chạy Immich ${recipe.version}.` :
+    !online ? 'Chờ cả hai agent hỗ trợ nâng cấp và kết nối đầy đủ.' : prepared ? 'Bản mới đã chuẩn bị trên cả hai máy. Bước áp dụng sẽ sao lưu database và tạm ngưng phục vụ.' :
+    !sameBase ? 'Hai máy phải cùng phiên bản đầu vào của recipe. Chưa hỗ trợ hạ phiên bản hoặc nâng cấp ngoài danh sách.' :
+    'Chuẩn bị riêng code mới trong staging, giữ app hiện tại phục vụ. Chỉ áp dụng sau lần xác nhận tiếp theo.';
+  const progress=$('#upgrade-progress');progress.hidden=!job?.upgrade;
+  if (job?.upgrade) progress.textContent=job.error || job.progress?.message || (job.status==='succeeded' ? 'Hoàn tất · '+(job.kind==='upgrade-stage'?'đã chuẩn bị, chưa nâng phiên bản':'đã xác nhận cả hai máy') : job.steps[job.index]?.label || 'Đang xử lý');
 }
 
 function renderJob() {
@@ -260,6 +303,7 @@ function renderJob() {
   $("#job-status").className = "small-badge " + (job.status === "failed" ? "red" : job.status === "succeeded" ? "green" : "amber");
   detail.replaceChildren();
   $('#job-route').textContent = `${name(job.source)} → ${name(job.target)}`;
+  if (job.upgrade) $('#job-route').textContent=`${job.upgrade.fromVersion} → ${job.upgrade.version} · Cả hai máy`;
   const progressMessage = job.progress?.message || (job.maintenance ? 'Tạm dừng phục vụ · đang chốt dữ liệu' : '');
   if (progressMessage && !terminal(job)) detail.append(el("div", "job-progress", progressMessage));
   if (job.error) detail.append(el("div", "notice error", job.error));
@@ -269,7 +313,11 @@ function renderJob() {
     archive: 'Lưu bản cũ', receive: 'Nhận dữ liệu', send: 'Chọn nguồn', dump: 'Sao lưu DB',
     'sync-restore': 'Đồng bộ DB', validate: 'Kiểm tra', 'freeze-dump': 'Chốt dữ liệu',
     'wal-barrier': 'Chốt WAL', 'sync-wal': 'WAL & ảnh', 'freeze-wal': 'Dừng ghi',
-    'wait-peer': 'Chờ tệp cuối', transfer: 'Bàn giao', 'wait-owner': 'Mở phục vụ', resume: 'Mở lại'
+    'wait-peer': 'Chờ tệp cuối', transfer: 'Bàn giao', 'wait-owner': 'Mở phục vụ', resume: 'Mở lại',
+    'upgrade-preflight':'Kiểm tra','upgrade-build':'Build bản mới','upgrade-verify':'Xác minh',
+    'upgrade-freeze':'Dừng ghi','upgrade-backup':'Backup cuối','upgrade-install':'Cài code',
+    'upgrade-copy-backup':'Chép backup',
+    'upgrade-start':'Mở bản mới','upgrade-wait':'Chờ active','upgrade-check':'Xác nhận'
   };
   const stepIcons = { archive: 'archive', receive: 'download', send: 'upload', dump: 'database',
     'sync-restore': 'sync', validate: 'check', 'freeze-dump': 'pause', 'wait-peer': 'clock',
@@ -425,6 +473,16 @@ async function load() {
 }
 
 function confirmAction(kind, requestedNode = null) {
+  if (kind.startsWith('upgrade-')) {
+    const version=kind==='upgrade-retry'?state.immichUpgrade?.version:upgradeVersion;
+    if (!version) return;
+    dialogAction={kind,version,expected:version};
+    $('#confirm-title').textContent=kind==='upgrade-stage'?'Chuẩn bị phiên bản '+version:kind==='upgrade-retry'?'Tiếp tục nâng cấp '+version:'Nâng cấp cả hai lên '+version;
+    $('#confirm-description').textContent=kind==='upgrade-stage'?'Build trong staging trên hai máy; chưa thay code đang chạy. Tự chuyển máy tạm dừng trong job chuẩn bị.':'Sẽ tạm ngưng phục vụ, sao lưu database, cài cùng phiên bản trên cả hai máy và chỉ chạy migration trên active. Có lỗi sẽ giữ khóa bàn giao; không tự downgrade hoặc restore database.';
+    $('#confirm-summary').textContent=`Active giữ nguyên: ${name(state.owner)} · Phiên bản ${version}`;
+    $('#confirm-label').textContent=`Nhập “${version}” để xác nhận`;
+    $('#confirm-input').value='';$('#confirm-submit').disabled=true;$('#confirm-dialog').showModal();$('#confirm-input').focus();return;
+  }
   if (!state || submitting) return;
   const destination = kind === "set-maintenance" ? requestedNode : kind === "set-preference" ? preferredNode : kind === "resume" ? state.owner : kind === "prepare" ? nodes.find((node) => node !== state.owner) : target;
   dialogAction = { kind, target: destination, enabled: returnEnabled, expected: name(destination).trim().toLowerCase() };
@@ -465,11 +523,13 @@ $("#confirm-input").addEventListener("input", () => { $("#confirm-submit").disab
 $("#confirm-form").addEventListener("submit", (event) => {
   if (event.submitter?.value !== "confirm") return;
   if (!dialogAction || $("#confirm-input").value.trim().toLowerCase() !== dialogAction.expected) { event.preventDefault(); return; }
-  sendAction({ action: dialogAction.kind, target: dialogAction.target, ...(["set-preference", "set-maintenance"].includes(dialogAction.kind) ? { enabled: dialogAction.enabled } : {}) });
+  sendAction({ action: dialogAction.kind, target: dialogAction.target, ...(dialogAction.version ? {version:dialogAction.version} : {}), ...(["set-preference", "set-maintenance"].includes(dialogAction.kind) ? { enabled: dialogAction.enabled } : {}) });
 });
 $("#auto-toggle").addEventListener("change", (event) => { const enabled = event.target.checked; event.target.checked = state.auto; sendAction({ action: "set-auto", enabled }); });
 $("#recovery-toggle").addEventListener("change", (event) => { const enabled = event.target.checked; event.target.checked = state.recovery.enabled; sendAction({ action: "set-recovery", enabled }); });
 $("#refresh").addEventListener("click", load);
+$('#upgrade-version').addEventListener('change', event=>{upgradeVersion=event.target.value;renderUpgrades();});
+for (const kind of ['stage','apply','retry']) $('#upgrade-'+kind).addEventListener('click',()=>confirmAction('upgrade-'+kind));
 $("#preferred-node").addEventListener("change", (event) => { preferredNode = event.target.value; preferenceDirty = true; renderControls(); });
 $("#return-toggle").addEventListener("change", (event) => {
   const enabled = event.target.checked; event.target.checked = state.preference?.enabled === true;
@@ -495,6 +555,7 @@ document.querySelectorAll("[data-view]").forEach((button) => button.addEventList
   const view = button.dataset.view;
   $('#history-view').hidden = view !== 'history';
   $('#backups-view').hidden = view !== 'backups';
+  $('#upgrades-view').hidden = view !== 'upgrades';
   $('#overview-view').hidden = view !== 'overview';
 }));
 document.addEventListener("visibilitychange", () => { if (document.hidden) clearTimeout(timer); else load(); });

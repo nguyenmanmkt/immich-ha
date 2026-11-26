@@ -6,7 +6,8 @@ set -euo pipefail
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 test -f /etc/immich-ha/config.json
 test -f "$base/config.json"
-for file in agent.py ha_runtime.py pg_stream.py maintenance-v2.py app-run-v2; do test -f "$base/$file"; done
+for file in agent.py ha_runtime.py pg_stream.py immich_upgrade.py build-immich-release.sh maintenance-v2.py app-run-v2; do test -f "$base/$file"; done
+bash -n "$base/build-immich-release.sh"
 bash -n "$base/app-run-v2"
 mountpoint -q /mnt/immich-storage
 
@@ -99,6 +100,14 @@ install -m 700 "$base/agent.py" /usr/local/sbin/immich-ha-agent
 install -m 600 "$base/agent.py" /usr/local/lib/immich-ha/ha_agent.py
 install -m 600 "$base/ha_runtime.py" /usr/local/lib/immich-ha/ha_runtime.py
 install -m 600 "$base/pg_stream.py" /usr/local/lib/immich-ha/pg_stream.py
+install -m 600 "$base/immich_upgrade.py" /usr/local/lib/immich-ha/immich_upgrade.py
+install -m 700 "$base/build-immich-release.sh" /usr/local/lib/immich-ha/build-immich-release.sh
+python3 - <<'PY'
+import sys
+sys.path.insert(0, '/usr/local/lib/immich-ha')
+from pg_stream import install_network_guard
+install_network_guard()
+PY
 install -m 700 "$base/maintenance-v2.py" /usr/local/sbin/immich-ha-maintenance
 install -o root -g immich -m 750 "$base/app-run-v2" /usr/local/sbin/immich-ha-app-run
 for unit in immich-web.service immich-standby.service immich-ml.service; do

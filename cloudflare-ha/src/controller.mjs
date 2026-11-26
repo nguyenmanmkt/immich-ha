@@ -4,6 +4,7 @@ import { upgradeOperations, busy, startOperation, advanceOperation, operationCom
 import { recoveryState, reconcileStandby } from "./recovery.mjs";
 import { preferenceState, setPreference, reconcilePreference, RETURN_STABLE_MS } from "./failback.mjs";
 import { maintenanceFor, excludedNode, setNodeMaintenance } from "./node-maintenance.mjs";
+import { UPGRADE_RECIPES, upgradeLocked } from './immich-upgrade.mjs';
 export const LIMITS = Object.freeze({
   leaseMs: 240_000,
   fenceMs: 30_000,
@@ -75,8 +76,10 @@ export function advance(s, now) {
   }
   advanceOperation(s, now, eligibility(s, now));
   markTakeoverReady(s, now);
-  reconcilePreference(s, now, (node) => healthy(s, node, now), (node) => eligible(s, node, now));
-  reconcileStandby(s, now, (node) => healthy(s, node, now), (node) => eligible(s, node, now));
+  if (!upgradeLocked(s)) {
+    reconcilePreference(s, now, (node) => healthy(s, node, now), (node) => eligible(s, node, now));
+    reconcileStandby(s, now, (node) => healthy(s, node, now), (node) => eligible(s, node, now));
+  }
   advanceOperation(s, now, eligibility(s, now));
   return s;
 }
@@ -146,7 +149,7 @@ function cleanMetrics(input) {
   // Only data used by the dashboard/job engine; never accept arbitrary config/secrets.
   const output = {};
   for (const key of ["runtimeV2", "appMode", "appVersion", "postgresVersion", "disk", "databaseDisk",
-    "memory", "cpu", "backup", "builtinBackups", "seed", "syncthing", "immich", "tailscale", "lastError", "runtimeBusy", "mediaMounted", "maintenanceControl", "postgresStreaming"]) {
+    "memory", "cpu", "backup", "builtinBackups", "seed", "syncthing", "immich", "tailscale", "lastError", "runtimeBusy", "mediaMounted", "maintenanceControl", "postgresStreaming", "immichUpgrade"]) {
     if (input[key] !== undefined) output[key] = input[key];
   }
   if (JSON.stringify(output).length > 12_000) throw new Error("Metrics payload too large");
@@ -155,6 +158,7 @@ function cleanMetrics(input) {
 
 export function admin(s, input, now) {
   upgradeOperations(s);
+  if (upgradeLocked(s) && !['upgrade-retry','set-alerts','test-alerts'].includes(input.action)) throw new Error('Nâng cấp chưa hoàn tất; chỉ tiếp tục nâng cấp, không đổi vai trò hoặc bật tự động');
   if (input.action === "set-maintenance") {
     setNodeMaintenance(s, input, now, (node) => healthy(s, node, now)); advance(s, now); return;
   }
@@ -167,7 +171,7 @@ export function admin(s, input, now) {
     audit(s, now, input.actor || "operator", "set-recovery", String(input.enabled));
     advance(s, now); return;
   }
-  if (["prepare", "switch", "resume"].includes(input.action)) {
+  if (["prepare", "switch", "resume", "upgrade-stage", "upgrade-apply", "upgrade-retry"].includes(input.action)) {
     startOperation(s, { ...input, kind: input.action }, now, input.id || crypto.randomUUID(), eligibility(s, now));
     advance(s, now);
     return;
@@ -219,6 +223,7 @@ export function status(s, now) {
     autoRequested: s.autoRequested ?? s.auto,
     preference: { ...preferenceState(s), stableMs: RETURN_STABLE_MS },
     nodeMaintenance: s.nodeMaintenance || {},
+    immichUpgrade: s.immichUpgrade || null, upgradeRecipes: UPGRADE_RECIPES, immichUpgradeProtocol: 2,
   };
 }
 

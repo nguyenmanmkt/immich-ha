@@ -692,6 +692,9 @@ class Runtime:
     def execute(self, command, progress):
         if not re.fullmatch(r"[a-f0-9-]{36}", command.get("jobId", "")):
             raise ValueError("Invalid job identity")
+        if command.get('action','').startswith('upgrade-'):
+            from immich_upgrade import Upgrader
+            return Upgrader(self, command, progress).execute()
         if self.streaming:
             return self.streaming.execute(command, progress)
         action = command["action"]
@@ -776,7 +779,9 @@ WHERE "deletedAt" IS NULL AND visibility IN ('timeline','archive');"""
                             tail['state'] = 'offline'
                         else:
                             try:
-                                tail.update(parse_tail_ping(run('tailscale', 'ping', '--c=1', '--timeout=2s', peer_ip, timeout=4)))
+                                # A DERP pong is reachable too; do not require a
+                                # direct path for this connectivity probe to succeed.
+                                tail.update(parse_tail_ping(run('tailscale', 'ping', '--c=1', '--until-direct=false', '--timeout=2s', peer_ip, timeout=4)))
                             except Exception:
                                 tail['state'] = 'unreachable'
                     except Exception:
@@ -831,6 +836,12 @@ WHERE "deletedAt" IS NULL AND visibility IN ('timeline','archive');"""
             return {"total": value.total, "used": value.used, "free": value.free}
         value = {"runtimeV2": True, "maintenanceControl": True, "appMode": self.mode(), "disk": storage(MEDIA),
                  "databaseDisk": storage("/var/lib/postgresql"), "seed": self.seed()}
+        try:
+            from immich_upgrade import RECIPES
+            if Path(__file__).with_name('build-immich-release.sh').is_file():
+                value['immichUpgrade'] = {'protocol':1,'recipes':[recipe['id'] for recipe in RECIPES.values()]}
+        except ImportError:
+            pass
         if self.streaming:
             try:
                 value['postgresStreaming'] = self.streaming.state()

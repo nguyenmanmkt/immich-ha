@@ -60,7 +60,7 @@ Máy quản trị có thể chạy `python admin.py status --compact` và `pytho
 - CPU là delta usage_usec cgroup chia theo quota/affinity của LXC. Mẫu đầu hiển thị Đang đo.
 - RAM lấy MemTotal - MemAvailable do LXCFS cung cấp; là số liệu LXC, không phải cả host Proxmox.
 - Immich đếm IMAGE/VIDEO chưa xóa, có archive, không tính visibility=hidden. Máy dự phòng đọc database replica cục bộ.
-- Tailscale xác định peer theo thiết bị chia sẻ folder Syncthing, ping có timeout để phân biệt direct/relay. Không suy đoán từ DERP home region. Tham khảo: https://tailscale.com/docs/reference/ping-types
+- Tailscale xác định peer theo thiết bị chia sẻ folder Syncthing, ping có timeout để phân biệt direct/relay. Phép kiểm tra dùng `--until-direct=false`: Direct và DERP/relay đều là kết nối thành công, hiển thị kiểu kết nối cùng độ trễ; không yêu cầu phải thiết lập được Direct. Không suy đoán từ DERP home region. Tham khảo: https://tailscale.com/docs/reference/ping-types
 - Thống kê Immich/Tailscale chạy nền khoảng một phút; lỗi không được chặn heartbeat. Dữ liệu cũ được đánh dấu.
 - Tốc độ Syncthing là trung bình kết nối giữa hai heartbeat, gồm cả folder database.
 

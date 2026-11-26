@@ -3,7 +3,10 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { initialState, heartbeat, recordProbe, status } from "./src/controller.mjs";
 
-const project = JSON.parse(await readFile(new URL("./project.json", import.meta.url), "utf8"));
+const project = JSON.parse(await readFile(new URL("./project.json", import.meta.url), "utf8").catch(error => {
+  if (error.code !== 'ENOENT') throw error;
+  return readFile(new URL('./project.example.json', import.meta.url), 'utf8');
+}));
 const GiB = 1024 ** 3;
 function previewState() {
   const now = Date.now();
@@ -13,6 +16,8 @@ function previewState() {
     const metrics = {
       runtimeV2: true, appMode: node === "primary" ? "active" : "standby",
       appVersion: "3.4.1", postgresVersion: "16.16",
+      immichUpgrade: {protocol:1,recipes:['native-3.4.2-r1']},
+      postgresStreaming: {mode:'streaming',handoverVersion:2,inRecovery:node!=='primary',receiverConnected:node!=='primary',pendingBytes:0},
       disk: node === "primary" ? { total: 931 * GiB, used: 154 * GiB, free: 730 * GiB } : { total: 118 * GiB, used: 107 * GiB, free: 5.5 * GiB },
       memory: { total: 6 * GiB, used: (node === "primary" ? 2.4 : 1.1) * GiB },
       backup: { lastDumpAt: now - 22 * 60000, count: 24 },

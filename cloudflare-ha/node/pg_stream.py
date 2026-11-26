@@ -19,6 +19,7 @@ CONFIG = Path('/etc/immich-ha/streaming.json')
 DATA = Path('/var/lib/postgresql/16/ha')
 GRANT = Path('/run/immich-ha-stream-grant')
 LSN = re.compile(r'[0-9A-F]+/[0-9A-F]+\Z')
+NETWORK_DROP_IN = Path('/etc/systemd/system/postgresql@16-ha.service.d/immich-tailnet.conf')
 
 
 def configuration(enabled=True):
@@ -59,7 +60,51 @@ def status():
       'sender', (SELECT sender_host FROM pg_stat_wal_receiver LIMIT 1));"""))
 
 
+def wait_local_address(timeout=45):
+    """Do not let PostgreSQL silently start with only its loopback listener."""
+    config = configuration(enabled=False)
+    if config is None:
+        raise RuntimeError('Missing HA streaming network configuration')
+    expected = ipaddress.ip_address(config['local_ip'])
+    if expected not in ipaddress.ip_network('100.64.0.0/10'):
+        raise ValueError('Local replication address must be a Tailscale IPv4 address')
+    deadline = time.monotonic() + timeout
+    while True:
+        result = subprocess.run(['ip', '-j', '-4', 'addr', 'show', 'dev', 'tailscale0'],
+            capture_output=True, text=True, timeout=3)
+        if result.returncode == 0:
+            addresses = json.loads(result.stdout)
+            if any(info.get('local') == str(expected) for interface in addresses
+                   for info in interface.get('addr_info', [])):
+                return
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Tailscale chưa có IP cục bộ; chưa khởi động PostgreSQL HA')
+        time.sleep(1)
+
+
+def install_network_guard():
+    """Install ordering and a real address check; never restart a running DB."""
+    if configuration(enabled=False) is None:
+        return False
+    text = '''# Managed by Immich HA: wait for the configured tailnet address.
+[Unit]
+Wants=tailscaled.service
+After=tailscaled.service
+
+[Service]
+ExecStartPre=/usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/local/lib/immich-ha'); from pg_stream import wait_local_address; wait_local_address()"
+'''
+    if NETWORK_DROP_IN.exists() and NETWORK_DROP_IN.read_text() == text:
+        return False
+    NETWORK_DROP_IN.parent.mkdir(parents=True, exist_ok=True)
+    NETWORK_DROP_IN.write_text(text)
+    subprocess.run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
+    return True
+
+
 def ctl(action):
+    if action == 'start':
+        wait_local_address()
     # No arbitrary cluster identifiers from controller requests.
     result = subprocess.run(['pg_ctlcluster', '16', 'ha', action], capture_output=True, timeout=90)
     if result.returncode and result.returncode != 2:
@@ -154,6 +199,8 @@ class Streaming:
 
     def activate(self):
         r = self.runtime
+        if r.read('immich-upgrade-lock.json', ''):
+            return False
         if r.mode() == 'frozen':
             return False
         grant = getattr(r, 'grant', {})

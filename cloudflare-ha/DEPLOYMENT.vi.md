@@ -312,6 +312,9 @@ Không chạy lại `install-node.sh`, `configure.py`, `stage` hoặc `cutover`.
 | Agent streaming và bàn giao WAL/nhanh | `python tools/upgrade-wal-handover.py` |
 | Chỉ build ZIP node | `python tools/package-nodes.py` |
 | Kiểm tra public | `python check-public.py` |
+| Cài tính năng nâng cấp Immich trên dashboard | `python tools/upgrade-immich-ha.py --via primary --deploy` |
+
+Nâng phiên bản ứng dụng Immich là quy trình riêng: đọc [IMMICH-UPGRADE.vi.md](IMMICH-UPGRADE.vi.md). Deploy feature không tự nâng Immich. Trên UI, chuẩn bị staging trước, sau đó xác nhận áp dụng cho cả hai máy; không dùng updater gốc trực tiếp với các service/database HA.
 
 Rollout runtime yêu cầu hệ thống khỏe/idle, giữ module cũ và tạm tắt tự động, cập nhật executable agent **và** module Python, sau đó mới cập nhật Worker và khôi phục tự động. Nếu kiểm tra thất bại, xem status; không tự bật auto khi chưa đủ điều kiện. `.env`, `project.json`, `generated/`, node IDs và Durable Object storage ID phải được giữ nguyên.
 

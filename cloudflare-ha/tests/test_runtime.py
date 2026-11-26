@@ -80,6 +80,10 @@ class RuntimeTests(unittest.TestCase):
                     return '{"photos":13979,"videos":1596}'
                 if args[1] == 'status':
                     return '{"BackendState":"Running","Peer":{"peer":{"Online":true,"TailscaleIPs":["100.64.0.10"]}}}'
+                # The real CLI exits nonzero after a successful DERP pong when
+                # --until-direct defaults to true. Model that failure here.
+                if '--until-direct=false' not in args:
+                    raise RuntimeError('direct connection not established')
                 return 'pong from immich (100.64.0.10) via DERP(sin) in 40ms'
             with patch.object(module, 'run', side_effect=command):
                 runtime.observability('100.64.0.10')

@@ -9,11 +9,21 @@
 <div class="app-shell">
 <header class="topbar">
 <a class="brand" href="/" aria-label="Immich Control"><span class="brand-icon" aria-hidden="true">i</span><span>Immich <b>Control</b></span></a>
-<nav aria-label="Điều hướng"><button class="nav-item selected" data-view="overview"><span aria-hidden="true">▦</span>Tổng quan</button><button class="nav-item" data-view="backups"><span aria-hidden="true">▤</span>Backup</button><button class="nav-item" data-view="history"><span aria-hidden="true">◷</span>Lịch sử</button><a id="open-immich" class="nav-item nav-external" href="#" target="_blank" rel="noreferrer" hidden>Mở Immich <span aria-hidden="true">↗</span></a></nav>
+<nav aria-label="Điều hướng"><button class="nav-item selected" data-view="overview"><span aria-hidden="true">▦</span>Tổng quan</button><button class="nav-item" data-view="backups"><span aria-hidden="true">▤</span>Backup</button><button class="nav-item" data-view="upgrades"><span aria-hidden="true">↑</span>Nâng cấp</button><button class="nav-item" data-view="history"><span aria-hidden="true">◷</span>Lịch sử</button><a id="open-immich" class="nav-item nav-external" href="#" target="_blank" rel="noreferrer" hidden>Mở Immich <span aria-hidden="true">↗</span></a></nav>
 <div class="top-actions"><span id="preview-badge" class="preview-badge" hidden>XEM TRƯỚC</span><button id="refresh" class="icon-button" aria-label="Làm mới trạng thái">↻</button><span class="account"><span class="avatar">N</span><span id="account-label">Quản trị viên</span></span></div>
 </header>
 <main>
 <div id="connection-banner" class="notice" role="status" hidden></div>
+<section id="upgrades-view" class="view" hidden>
+<article class="panel upgrade-panel">
+<div class="panel-heading"><div><span class="eyebrow">IMMICH</span><h2>Nâng cấp hai máy</h2></div><span id="upgrade-phase" class="small-badge">CHƯA CHUẨN BỊ</span></div>
+<div id="upgrade-nodes" class="server-grid"></div>
+<div class="upgrade-actions"><label for="upgrade-version">Phiên bản đã có recipe</label><select id="upgrade-version" aria-label="Phiên bản nâng cấp"></select><a id="upgrade-notes" target="_blank" rel="noreferrer">Release notes ↗</a></div>
+<p id="upgrade-hint" class="upgrade-hint"></p>
+<div class="upgrade-buttons"><button id="upgrade-stage" class="button">Chuẩn bị</button><button id="upgrade-apply" class="button primary">Nâng cấp cả hai</button><button id="upgrade-retry" class="button danger" hidden>Tiếp tục nâng cấp</button></div>
+<div id="upgrade-progress" class="notice" role="status" hidden></div>
+</article>
+</section>
 <div id="overview-view" class="view">
 
 <article id="system-summary" class="panel system-summary" role="status" hidden><div id="summary-symbol" class="summary-symbol" aria-hidden="true"></div><div class="summary-copy"><h2 id="system-title"></h2><div class="serving-line"><span id="live-dot" class="live-dot"></span><span id="serving-label"></span></div><p id="recovery-label" hidden></p></div></article>
