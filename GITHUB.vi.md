@@ -1,10 +1,10 @@
-# Chuẩn bị source để đưa lên GitHub
+# Kiểm tra và push GitHub
 
-Repo dự kiến ở thư mục chứa README.md này; source ứng dụng nằm trong cloudflare-ha/.
+Repo: [nguyenmanmkt/immich-ha](https://github.com/nguyenmanmkt/immich-ha). Thực hiện từ checkout hiện tại; không tạo lại repo hoặc remote.
 
-## Cập nhật repo đã có
+## Kiểm tra source
 
-Chạy kiểm tra từ `cloudflare-ha/` trước khi stage:
+Trong `cloudflare-ha/`:
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
@@ -13,62 +13,30 @@ python tools/embed-ui.py
 python tools/prepare-github.py
 ```
 
-Từ thư mục gốc repo, xem working tree rồi stage/kiểm tra phần định chia sẻ:
+## Commit và push
+
+Từ thư mục gốc repo:
 
 ```bash
 git status --short
 git diff --stat
 git add .
-git diff --cached --name-only
 git diff --cached
-```
-
-Chạy lại audit sau khi stage (`python cloudflare-ha/tools/prepare-github.py`). Chỉ khi đã đọc staged diff và audit không có findings, tự commit/push:
-
-```bash
-git commit -m "Document quorum fallback and witness Funnel deployment"
+python cloudflare-ha/tools/prepare-github.py
+git commit -m "Update installation and operations documentation"
 git push
 ```
 
-Không cần `git init` hoặc tạo lại remote khi repo đã có. Source audit không sửa index, không commit/push, không deploy và không SSH. Nó đọc file tracked/untracked không bị ignore trong working tree; nếu index và working tree khác nhau, staged diff vẫn cần được đọc riêng. Không dùng `git add -f` để đưa file riêng vào repo.
+Đọc staged diff và chỉ commit khi audit không có findings. Audit đọc working tree, không thay việc kiểm tra nội dung đã stage; không tự commit/push hoặc deploy.
 
-## File được chia sẻ
+## File riêng
 
-Source Worker, web, agent, tests, tài liệu hiện tại, cấu hình mẫu và workflow kiểm tra. project.json, .env, wrangler.jsonc, generated/, private keys, database dumps, ZIP node và ghi chép migration riêng không được đưa lên.
+Không commit `.env`, `project.json`, `.install/`, `generated/`, host keys, token, SQL/physical backups hoặc ZIP node. Không dùng `git add -f` để đưa chúng vào repo. Nếu secret từng nằm trong lịch sử Git, thêm `.gitignore` không xóa được secret đó.
 
-Kiểm tra hoặc tạo ZIP source sạch:
-
-```bash
-cd cloudflare-ha
-python tools/prepare-github.py
-python tools/prepare-github.py --zip
-```
-
-ZIP kết quả nằm trong generated/github-source.zip. Đây là ZIP source công khai; khác hoàn toàn primary-v2.zip / backup-v2.zip chứa token riêng. Công cụ kiểm tra các file sẽ chia sẻ, tìm secret đã lưu cục bộ và một số định dạng secret phổ biến. Không thay thế kiểm tra thủ công hoặc secret scanning của GitHub.
-
-## Chỉ khi tạo repo lần đầu
-
-Từ thư mục chứa README.md:
+Tạo ZIP source khi cần:
 
 ```bash
-git init
-git add .
-git status --short
-git diff --cached --stat
-git diff --cached
+python cloudflare-ha/tools/prepare-github.py --zip
 ```
 
-Xem staged diff trước khi commit. Không dùng git add -f cho file bị bỏ qua.
-
-```bash
-git commit -m "Initial Immich HA source"
-```
-
-Sau đó tạo repo GitHub, chọn private/public và thiết lập remote theo URL repo của bạn. Chưa có lệnh push hoặc tạo repo nào được công cụ audit thực hiện.
-
-## Trước khi public
-
-- Chủ dự án chọn LICENSE nếu muốn cấp một giấy phép cụ thể.
-- Kiểm tra lại quyền sử dụng logo/tài sản bên thứ ba theo THIRD_PARTY_NOTICES.md.
-- Không tạo workflow auto-deploy bằng token production trong lần push đầu. Workflow đi kèm chỉ test, không liên lạc Cloudflare/LXC và không cần secret.
-- Nếu token từng bị commit trước đó, bỏ file hoặc thêm .gitignore không xóa token khỏi lịch sử; phải xử lý token và lịch sử riêng.
+Kết quả: `cloudflare-ha/generated/github-source.zip`, khác ZIP node chứa credential. CI chỉ kiểm tra source, không tự deploy production. Giấy phép/tài sản: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
