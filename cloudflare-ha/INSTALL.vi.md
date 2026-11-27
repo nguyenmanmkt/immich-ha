@@ -4,6 +4,8 @@ Mỗi LXC tự cài cục bộ và chủ động kết nối HTTPS ra Worker. Kh
 
 **Bộ cài mới chưa được nghiệm thu end-to-end trên hai LXC cài mới.** Unit/controller tests không thay một lần cài thật. Không chạy init/join trên HA đang hoạt động; installer từ chối config/cluster đã có.
 
+**Chưa cài Immich hoặc gắn ổ?** Làm [bước 1 trong DEPLOYMENT.vi.md](DEPLOYMENT.vi.md#1-chuẩn-bị) trước: tạo hai LXC → gắn volume → đặt media root. `init/join` chỉ cài HA, không cài Immich hoặc tạo ổ dữ liệu.
+
 Bộ cài này chỉ dựng hai node do Cloudflare điều phối. Nó không cài quorum, witness hoặc Funnel; khi mất Cloudflare, không có điều phối thay thế và gate đóng khi grant hết hạn. Phần mở rộng được tách tại [DEPLOYMENT.vi.md](DEPLOYMENT.vi.md).
 
 ## Điều kiện
