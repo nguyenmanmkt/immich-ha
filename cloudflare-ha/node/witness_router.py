@@ -19,17 +19,26 @@ import uuid
 SOCKET=Path('/run/immich-ha-router/route.sock')
 
 
+def private_address(value, mode='tailscale'):
+    address=ipaddress.IPv4Address(value)
+    networks=('100.64.0.0/10',) if mode=='tailscale' else ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16') if mode=='lan' else ()
+    if str(address)!=value or not any(address in ipaddress.ip_network(n) for n in networks):raise ValueError('Invalid private route address')
+    return address
+
+
 def validate(config):
     if config.get('version')!=1 or str(uuid.UUID(config['clusterId']))!=config['clusterId']:raise ValueError('Invalid router identity')
     if set(config.get('nodes',{}))!={'primary','backup'}:raise ValueError('Two node identities required')
     for value in config['nodes'].values():
-        if ipaddress.ip_address(value['ip']) not in ipaddress.ip_network('100.64.0.0/10') or type(value['port']) is not int or not 1024<=value['port']<=65535 or value['port'] in (2283,2379,2380,5432,5433,8080,9081):raise ValueError('Expected a gated Tailscale target')
+        private_address(value['ip'],config.get('networkMode','tailscale'))
+        if type(value['port']) is not int or not 1024<=value['port']<=65535 or value['port'] in (2283,2379,2380,5432,5433,8080,9081):raise ValueError('Expected a gated Tailscale target')
     if len({v['ip'] for v in config['nodes'].values()})!=2:raise ValueError('Distinct node addresses required')
     endpoints=config.get('endpoints',[])
     if len(endpoints)!=3 or len(set(endpoints))!=3:raise ValueError('Three quorum endpoints required')
     for endpoint in endpoints:
         u=urllib.parse.urlsplit(endpoint)
-        if u.scheme!='https' or u.port!=2379 or u.username or u.password or u.path not in ('','/') or u.query or u.fragment or ipaddress.ip_address(u.hostname) not in ipaddress.ip_network('100.64.0.0/10'):raise ValueError('Invalid quorum endpoint')
+        if u.scheme!='https' or u.port!=2379 or u.username or u.password or u.path not in ('','/') or u.query or u.fragment:raise ValueError('Invalid quorum endpoint')
+        private_address(u.hostname,config.get('networkMode','tailscale'))
     return config
 
 

@@ -18,22 +18,27 @@ DATA='/var/lib/immich-ha-quorum'
 UNIT='immich-ha-quorum.service'
 
 
+def member_ip(member):
+    return member.get('ip') or member['tailscaleIp']
+
+
 def validate_plan(plan):
     if plan.get('version')!=1 or plan.get('engine')!='etcd' or set(plan.get('members',{}))!=set(NODES):raise ValueError('Invalid quorum topology')
     if str(uuid.UUID(plan['clusterId']))!=plan['clusterId']:raise ValueError('Invalid cluster identity')
     if plan.get('grantIntegrationEnabled') is not False or plan.get('funnelEnabled') is not False:raise ValueError('Installation only supports isolated staging')
     ips=[]
     for member in plan['members'].values():
-        ip=ipaddress.IPv4Address(member['tailscaleIp'])
-        if ip not in ipaddress.ip_network('100.64.0.0/10') or member['clientPort']!=2379 or member['peerPort']!=2380:raise ValueError('Expected private Tailscale endpoints')
+        from node.quorum_lock import private_address
+        ip=private_address(member_ip(member),plan.get('networkMode','tailscale'))
+        if member['clientPort']!=2379 or member['peerPort']!=2380:raise ValueError('Expected private quorum endpoints')
         ips.append(ip)
     if len(set(ips))!=3:raise ValueError('Duplicate member addresses')
 
 
 def validate_check(plan,check,healthy_nodes=NODES):
     statuses=check.get('statuses',[]);health=check.get('health',[]);members=check.get('members',{}).get('members',[])
-    endpoints={f'https://{member["tailscaleIp"]}:2379' for member in plan['members'].values()}
-    expected={f'https://{plan["members"][node]["tailscaleIp"]}:2379' for node in healthy_nodes}
+    endpoints={f'https://{member_ip(member)}:2379' for member in plan['members'].values()}
+    expected={f'https://{member_ip(plan["members"][node])}:2379' for node in healthy_nodes}
     if len(expected)<2 or not set(healthy_nodes).issubset(NODES):raise ValueError('A majority of named endpoints is required')
     if len(members)!=3 or {m.get('name') for m in members}!=set(NODES) or any(m.get('isLearner') for m in members):raise RuntimeError('Expected three named voting members')
     if {url for member in members for url in member.get('clientURLs',[])}!=endpoints:raise RuntimeError('Unexpected quorum member endpoints')
@@ -130,7 +135,7 @@ def certificates(plan,directory):
                 .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()),critical=False)
                 .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),critical=False)
                 .add_extension(x509.ExtendedKeyUsage(usage),critical=True))
-            if kind!='probe':builder=builder.add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(plan['members'][node]['tailscaleIp']))]),critical=False)
+            if kind!='probe':builder=builder.add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(member_ip(plan['members'][node])))]),critical=False)
             certificate=builder.sign(ca_key,hashes.SHA256())
             write(f'{node}-{kind}.key',private(key));write(f'{node}-{kind}.crt',certificate.public_bytes(serialization.Encoding.PEM))
     identity={'identity':expected,'hashes':{name:digest(directory/name) for name in names}}
@@ -139,7 +144,7 @@ def certificates(plan,directory):
 
 
 def configuration(plan,node):
-    member=plan['members'][node];ip=str(ipaddress.IPv4Address(member['tailscaleIp']))
+    member=plan['members'][node];ip=str(ipaddress.IPv4Address(member_ip(member)))
     def tls(kind,ca):
         value={'cert-file':f'{BASE}/{kind}.crt','key-file':f'{BASE}/{kind}.key',
                 'trusted-ca-file':f'{BASE}/{ca}-ca.crt','client-cert-auth':True}
@@ -152,7 +157,7 @@ def configuration(plan,node):
         'advertise-client-urls':f'https://{ip}:{member["clientPort"]}',
         'listen-peer-urls':f'https://{ip}:{member["peerPort"]}',
         'initial-advertise-peer-urls':f'https://{ip}:{member["peerPort"]}',
-        'initial-cluster':','.join(f'{n}=https://{plan["members"][n]["tailscaleIp"]}:{plan["members"][n]["peerPort"]}' for n in NODES),
+        'initial-cluster':','.join(f'{n}=https://{member_ip(plan["members"][n])}:{plan["members"][n]["peerPort"]}' for n in NODES),
         'initial-cluster-token':'immich-ha-'+plan['clusterId'],'initial-cluster-state':'new',
         'heartbeat-interval':200,'election-timeout':2000,'quota-backend-bytes':128*1024**2,
         'auto-compaction-mode':'periodic','auto-compaction-retention':'1h','max-wals':3,'max-snapshots':3,
@@ -201,11 +206,13 @@ def add_client_key_identifiers(plan,directory):
     return changes
 
 
-def service():
+def service(network_mode='tailscale'):
+    if network_mode not in ('lan','tailscale'):raise ValueError('Invalid network mode')
+    dependencies='network-online.target'+(' tailscaled.service' if network_mode=='tailscale' else '')
     return f'''[Unit]
 Description=Immich HA quorum (isolated staging)
-Wants=network-online.target tailscaled.service
-After=network-online.target tailscaled.service
+Wants={dependencies}
+After={dependencies}
 StartLimitIntervalSec=0
 
 [Service]
@@ -244,11 +251,11 @@ def package(plan,node,pki,executables):
         for suffix in ('crt','key'):
             name=kind+'.'+suffix;content[name]=(pki/f'{node}-{name}').read_bytes();paths[f'{BASE}/{name}']=name
     content['etcd.json']=(json.dumps(configuration(plan,node),indent=2)+'\n').encode();paths[BASE+'/etcd.json']='etcd.json'
-    content[UNIT]=service().encode();paths['/etc/systemd/system/'+UNIT]=UNIT
+    content[UNIT]=service(plan.get('networkMode','tailscale')).encode();paths['/etc/systemd/system/'+UNIT]=UNIT
     hashes={target:hashlib.sha256(content[source]).hexdigest() for target,source in paths.items()}
     manifest={'clusterId':plan['clusterId'],'node':node,'version':VERSION,'grantIntegrationEnabled':False,'funnelEnabled':False,'hashes':hashes}
-    data={'manifest':manifest,'clusterId':plan['clusterId'],'node':node,'ip':plan['members'][node]['tailscaleIp'],
-          'version':VERSION,'binaryDir':f'/opt/immich-ha-quorum/v{VERSION}','files':paths,'installedHashes':hashes}
+    data={'manifest':manifest,'clusterId':plan['clusterId'],'node':node,'ip':member_ip(plan['members'][node]),
+          'networkMode':plan.get('networkMode','tailscale'),'version':VERSION,'binaryDir':f'/opt/immich-ha-quorum/v{VERSION}','files':paths,'installedHashes':hashes}
     return content,data
 
 
@@ -270,7 +277,11 @@ if base.exists() or data.exists() or unit.exists():raise RuntimeError('Unowned o
 listeners=subprocess.check_output(['ss','-H','-lnt'],text=True)
 if any(line.split()[3].endswith((':'+str(p))) for p in (2379,2380) for line in listeners.splitlines() if len(line.split())>=4):raise RuntimeError('Quorum port already in use')
 if shutil.disk_usage('/').free<1024**3:raise RuntimeError('Insufficient root disk space')
-if subprocess.check_output(['tailscale','ip','-4'],text=True).strip()!=INPUT['ip']:raise RuntimeError('Wrong Tailscale identity')
+if INPUT.get('networkMode','tailscale')=='tailscale':
+ if subprocess.check_output(['tailscale','ip','-4'],text=True).strip()!=INPUT['ip']:raise RuntimeError('Wrong Tailscale identity')
+else:
+ addresses=json.loads(subprocess.check_output(['ip','-j','-4','addr','show'],text=True))
+ if not any(a.get('local')==INPUT['ip'] for i in addresses for a in i.get('addr_info',[])):raise RuntimeError('Wrong LAN identity')
 try:pwd.getpwnam('immich-quorum')
 except KeyError:subprocess.run(['useradd','--system','--home-dir',str(data),'--shell','/usr/sbin/nologin','immich-quorum'],check=True)
 account=pwd.getpwnam('immich-quorum');base.mkdir(mode=0o750);os.chmod(base,0o750);os.chown(base,0,account.pw_gid)

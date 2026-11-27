@@ -78,6 +78,15 @@ test('Funnel monitor exposes real route and HTTP latency and marks old readings 
   assert.ok(!elements.get('#funnel-status').className.includes('green'));
 });
 
+test('LAN streaming renders a LAN connection tile and setup progress stays separate from HA operations',()=>{
+  const s=fixture();for(const n of ['primary','backup']){s.agents[n].metrics.postgresStreaming={networkMode:'lan',available:true};s.agents[n].metrics.syncthing.peerConnected=true;}
+  s.setup={status:'running',index:4,total:27,label:'Ghép Syncthing A',joined:true};
+  const {elements}=setup(s);
+  assert.equal(elements.get('#setup-panel').hidden,false);
+  assert.equal(elements.get('#setup-label').textContent,'Ghép Syncthing A');
+  assert.ok(find(elements.get('#servers'),e=>e.textContent==='Kết nối LAN'));
+});
+
 test('Funnel settings list common and node addresses and require witness confirmation for off state',()=>{
   const s=fixture();s.funnel={url:'https://witness.example.ts.net',tailscaleIp:'100.64.0.3',checkedAt:s.serverTime,state:'healthy',ok:true,node:'primary',control:{enabled:false,confirmed:false,reportedAt:s.serverTime}};
   s.nodes.primary.funnelUrl='https://a.example.ts.net';s.nodes.primary.tailscaleIp='100.64.0.1';

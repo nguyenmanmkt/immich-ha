@@ -17,6 +17,18 @@ import pg_stream as pg
 
 
 class StreamingTests(unittest.TestCase):
+    def test_lan_is_explicit_optional_and_never_accepts_public_or_loopback_peers(self):
+        self.assertEqual(str(pg.replication_address('192.168.1.20','lan')),'192.168.1.20')
+        self.assertEqual(str(pg.replication_address('100.64.0.2')),'100.64.0.2')
+        for value,mode in [('8.8.8.8','lan'),('127.0.0.1','lan'),('100.64.0.2','lan'),('192.168.1.2','tailscale'),('10.0.0.2','other')]:
+            with self.subTest(value=value,mode=mode),self.assertRaises(ValueError):pg.replication_address(value,mode)
+
+    def test_lan_network_guard_needs_no_tailscale_service_or_interface(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(pg,'NETWORK_DROP_IN',Path(tmp)/'guard.conf'),patch.object(pg,'configuration',return_value={'network_mode':'lan','local_ip':'192.168.1.10'}),patch.object(pg.subprocess,'run',return_value=Mock(returncode=0,stdout='[{"ifname":"eth0","addr_info":[{"local":"192.168.1.10"}]}]')) as run:
+            pg.install_network_guard();self.assertNotIn('tailscaled',pg.NETWORK_DROP_IN.read_text())
+            self.assertIn('network-online.target',pg.NETWORK_DROP_IN.read_text())
+            pg.wait_local_address();self.assertEqual(run.call_args.args[0],['ip','-j','-4','addr','show'])
+
     def test_start_waits_for_local_tailnet_address_before_launching_postgres(self):
         with patch.object(pg, 'wait_local_address') as wait, patch.object(pg.subprocess, 'run', return_value=Mock(returncode=0)) as run:
             pg.ctl('start')

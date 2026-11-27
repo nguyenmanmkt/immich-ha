@@ -6,6 +6,7 @@
 .dev.vars
 .dev.vars.*
 generated/
+.install/
 project.json
 node/config.json
 worker-secrets.json

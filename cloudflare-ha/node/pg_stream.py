@@ -22,15 +22,21 @@ LSN = re.compile(r'[0-9A-F]+/[0-9A-F]+\Z')
 NETWORK_DROP_IN = Path('/etc/systemd/system/postgresql@16-ha.service.d/immich-tailnet.conf')
 
 
+def replication_address(value, mode='tailscale'):
+    ip=ipaddress.ip_address(value)
+    networks={'tailscale':('100.64.0.0/10',),'lan':('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16')}
+    if mode not in networks or not any(ip in ipaddress.ip_network(n) for n in networks[mode]):
+        raise ValueError('Replication address does not match configured LAN/Tailscale mode')
+    return ip
+
+
 def configuration(enabled=True):
     if not CONFIG.exists():
         return None
     value = json.loads(CONFIG.read_text())
     if enabled and value.get('enabled') is not True:
         return None
-    ip = ipaddress.ip_address(value['peer_ip'])
-    if ip not in ipaddress.ip_network('100.64.0.0/10'):
-        raise ValueError('Replication peer must be a Tailscale IPv4 address')
+    replication_address(value['peer_ip'],value.get('network_mode','tailscale'))
     if value.get('port') != 5433 or value.get('database') != 'immich_stream':
         raise ValueError('Unexpected replication cluster/port/database')
     if value.get('peer') not in ('primary', 'backup'):
@@ -65,12 +71,12 @@ def wait_local_address(timeout=45):
     config = configuration(enabled=False)
     if config is None:
         raise RuntimeError('Missing HA streaming network configuration')
-    expected = ipaddress.ip_address(config['local_ip'])
-    if expected not in ipaddress.ip_network('100.64.0.0/10'):
-        raise ValueError('Local replication address must be a Tailscale IPv4 address')
+    mode=config.get('network_mode','tailscale')
+    expected = replication_address(config['local_ip'],mode)
     deadline = time.monotonic() + timeout
     while True:
-        result = subprocess.run(['ip', '-j', '-4', 'addr', 'show', 'dev', 'tailscale0'],
+        command=['ip','-j','-4','addr','show']+(['dev','tailscale0'] if mode=='tailscale' else [])
+        result = subprocess.run(command,
             capture_output=True, text=True, timeout=3)
         if result.returncode == 0:
             addresses = json.loads(result.stdout)
@@ -78,13 +84,14 @@ def wait_local_address(timeout=45):
                    for info in interface.get('addr_info', [])):
                 return
         if time.monotonic() >= deadline:
-            raise RuntimeError('Tailscale chưa có IP cục bộ; chưa khởi động PostgreSQL HA')
+            raise RuntimeError(('Tailscale' if mode=='tailscale' else 'LAN')+' chưa có IP replication cục bộ; chưa khởi động PostgreSQL HA')
         time.sleep(1)
 
 
 def install_network_guard():
     """Install ordering and a real address check; never restart a running DB."""
-    if configuration(enabled=False) is None:
+    config=configuration(enabled=False)
+    if config is None:
         return False
     text = '''# Managed by Immich HA: wait for the configured tailnet address.
 [Unit]
@@ -94,6 +101,8 @@ After=tailscaled.service
 [Service]
 ExecStartPre=/usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/local/lib/immich-ha'); from pg_stream import wait_local_address; wait_local_address()"
 '''
+    if config.get('network_mode','tailscale')=='lan':
+        text=text.replace('configured tailnet address','configured LAN address').replace('tailscaled.service','network-online.target')
     if NETWORK_DROP_IN.exists() and NETWORK_DROP_IN.read_text() == text:
         return False
     NETWORK_DROP_IN.parent.mkdir(parents=True, exist_ok=True)
@@ -169,6 +178,7 @@ class Streaming:
     def state(self):
         value = status()
         value['mode'] = 'streaming'
+        value['networkMode'] = self.config.get('network_mode','tailscale')
         value['handoverVersion'] = 2
         value['fastHandoverVersion'] = 1
         if value['receiverConnected']:

@@ -5,6 +5,9 @@ import { ADMIN_HTML, ADMIN_CSS, ADMIN_JS, ADMIN_STATUS_JS } from "./admin-ui.mjs
 import { originAccessHeaders } from "./origin-access.mjs";
 import { probeFunnel, funnelStatus } from './funnel-health.mjs';
 import { initialFunnelControl, setFunnel, reportFunnel, publicFunnelControl } from './funnel-control.mjs';
+import { createSetup, enroll, nodeAuthorized, command as setupCommand, acceptResult as setupResult, publicSetup, SETUP_STEPS,digest as setupDigest } from './enrollment.mjs';
+import { privateIP, createWitness, joinWitness, witnessAuthorized, witnessCommand, witnessResult, extensionStable, publicWitness, steps as witnessSteps, healthy as witnessHealthy } from './witness-enrollment.mjs';
+import { funnelUrl } from './funnel-health.mjs';
 import { websocketResponse } from "./websocket-proxy.mjs";
 import { initialNotifications, publicNotifications, configureNotifications, queueTest, observeNotifications, slackPayload, postSlack, completeNotification } from "./notifications.mjs";
 
@@ -59,8 +62,10 @@ async function uiStatus(env, actor) {
   const value = await response.json();
   let nodes;
   try { nodes = JSON.parse(env.NODE_METADATA || "{}"); } catch { nodes = {}; }
+  if(value.setup?.nodes)for(const n of ['primary','backup'])if(value.setup.nodes[n]?.ip)nodes[n]={...nodes[n],...value.setup.nodes[n]};
+  for(const n of ['primary','backup'])if(value.nodeFunnelUrls?.[n])nodes[n]={...nodes[n],funnelUrl:value.nodeFunnelUrls[n],tailscaleIp:value.witness?.funnelIps?.[n] || nodes[n]?.tailscaleIp};
   return json({ ...value, nodes, publicUrl: `https://${env.PUBLIC_HOST}`, actorEmail: actor.email,
-    funnel: value.funnel ? { ...value.funnel, tailscaleIp: env.FUNNEL_WITNESS_IP || null } : null });
+    funnel: value.funnel ? { ...value.funnel, tailscaleIp: value.witness?.funnelIps?.witness || env.FUNNEL_WITNESS_IP || null } : null });
 }
 
 async function adminUI(request, env) {
@@ -79,7 +84,7 @@ async function adminUI(request, env) {
       const text = await request.text();
       if (text.length > 4096) return json({ error: "Payload too large" }, 413);
       const input = JSON.parse(text);
-      if (!["set-funnel", "set-recovery", "set-preference", "set-maintenance", "set-alerts", "test-alerts", "prepare", "switch", "resume", "upgrade-stage", "upgrade-apply", "upgrade-retry"].includes(input.action)) throw new Error("Thao tác không hợp lệ");
+      if (!["witness-token", "setup-token", "setup-retry", "set-funnel", "set-recovery", "set-preference", "set-maintenance", "set-alerts", "test-alerts", "prepare", "switch", "resume", "upgrade-stage", "upgrade-apply", "upgrade-retry"].includes(input.action)) throw new Error("Thao tác không hợp lệ");
       const response = await call(env, "/admin", {
         action: input.action, target: input.target, enabled: input.enabled,
         version: input.version,
@@ -88,13 +93,18 @@ async function adminUI(request, env) {
         id: crypto.randomUUID(), actor: actor.email,
       });
       if (!response.ok) return response;
-      return uiStatus(env, actor);
+      const actionResult=await response.json();
+      const view=await uiStatus(env,actor);
+      if(actionResult.joinCode && ['setup-token','witness-token'].includes(input.action))return json({...await view.json(),joinCode:actionResult.joinCode});
+      return view;
     } catch (error) { return json({ error: error.message }, 400); }
   }
   return json({ error: "Not found" }, 404);
 }
 
 async function probeOrigins(env) {
+  const current=await call(env,'/status',{});
+  const common=current.ok?(await current.json()).funnel?.url:null;
   const readings = {};
   await Promise.all([...["primary", "backup"].map(async (node) => {
     try {
@@ -119,7 +129,7 @@ async function probeOrigins(env) {
     } catch (error) {
       readings[node] = { ok: false, error: error.name === "TimeoutError" ? "timeout" : "origin fetch failed" };
     }
-  }), (async () => { readings.funnel = await probeFunnel(env.FUNNEL_URL); })()]);
+  }), (async () => { readings.funnel = await probeFunnel(common || env.FUNNEL_URL); })()]);
   const result = await call(env, "/probe", readings);
   if (!result.ok) throw new Error("Could not record origin probes");
   return result;
@@ -134,12 +144,16 @@ export class HAController extends DurableObject {
     this.notifications = initialNotifications();
     this.funnelProbe = null;
     this.funnelControl = initialFunnelControl();
+    this.setup = null;
+    this.witness = null;
     this.delivering = false;
     ctx.blockConcurrencyWhile(async () => {
       this.state = (await ctx.storage.get("state")) || initialState();
       this.notifications = (await ctx.storage.get("notifications")) || initialNotifications();
       this.funnelProbe = (await ctx.storage.get('funnelProbe')) || null;
       this.funnelControl = (await ctx.storage.get('funnelControl')) || initialFunnelControl();
+      this.setup = (await ctx.storage.get('setup')) || null;
+      this.witness = (await ctx.storage.get('witness')) || null;
     });
   }
 
@@ -153,16 +167,70 @@ export class HAController extends DurableObject {
       const notifications = structuredClone(this.notifications);
       let funnelProbe = this.funnelProbe;
       const funnelControl = structuredClone(this.funnelControl);
+      let setup=structuredClone(this.setup);
+      let witness=structuredClone(this.witness);
       let output;
+      let joinCode;
       try {
-        if (path === "/heartbeat") output = heartbeat(next, input.node, input, now);
+        if(path==='/witness-init') {
+          if(witness)throw new Error('Existing witness installation retained');
+          witness=createWitness(input,setup,status(next,now),now);
+          admin(next,{action:'set-auto',enabled:false,actor:'witness-installer'},now);
+          admin(next,{action:'set-recovery',enabled:false,actor:'witness-installer'},now);
+          if(witness.saved.preference?.node)admin(next,{action:'set-preference',target:witness.saved.preference.node,enabled:false,actor:'witness-installer'},now);
+          output=publicWitness(witness);
+        } else if(path==='/witness-join') {
+          output=await joinWitness(witness,input,setup?.nodes.primary.config.controller_url,now);
+        } else if(path==='/witness-node') {
+          if(!witnessAuthorized(witness,setup,input.node,input.token))return json({error:'Invalid extension credential'},401);
+          extensionStable(witness,status(next,now));
+          if(input.receipt && witness)try {witnessResult(witness,input.node,input.receipt,now);}catch(error){witness.status='failed';witness.error=error.message;}
+          if(witness?.status==='completed' && input.funnel) {
+            const f=input.funnel;
+            if(f.url) {
+              const url=funnelUrl(f.url);const previous=witness.funnelUrls?.[input.node];
+              if(previous && previous!==url)throw new Error('Existing Funnel identity retained');
+              witness.funnelUrls ??={};witness.funnelUrls[input.node]=url;
+            }
+            if(f.tailscaleIp) {
+              if(!privateIP(f.tailscaleIp,'tailscale'))throw new Error('Invalid Funnel tailnet IP');
+              witness.funnelIps ??={};witness.funnelIps[input.node]=f.tailscaleIp;
+            }
+            if(input.node==='witness')reportFunnel(funnelControl,f,now);
+          }
+          output={command:witnessCommand(witness,input.node),extension:publicWitness(witness),error:witness?.error || null,
+            funnel:input.node==='witness' && witness?.funnelUrls?.witness?publicFunnelControl(funnelControl,now):null};
+        } else if (path === '/setup-init') {
+          if(setup)throw new Error('Setup already exists; retain the current installation');
+          for(const n of ['primary','backup'])if(input.nodes?.[n]?.config?.agent_token!==this.env[n.toUpperCase()+'_AGENT_TOKEN'] || input.nodes[n].config.origin_token!==this.env[n.toUpperCase()+'_ORIGIN_TOKEN'])throw new Error('Enrollment credentials do not match this deployment');
+          setup=createSetup(input,now,next);output=publicSetup(setup);
+        } else if(path==='/setup-join') {
+          output=await enroll(setup,input,now);
+        } else if(path==='/setup-node') {
+          if(!nodeAuthorized(setup,input.node,input.token))return json({error:'Invalid setup node credential'},401);
+          if(input.receipt)try {setupResult(setup,input.node,input.receipt,now);}catch(error){setup.status='failed';setup.error=error.message;}
+          output={command:setupCommand(setup,input.node),complete:setup.status==='completed',nodes:publicSetup(setup).nodes,error:setup.error || null};
+        } else if (path === "/heartbeat") output = heartbeat(next, input.node, input, now);
         else if (path === "/probe") {
           funnelProbe = input.funnel || null;
           for (const node of ["primary", "backup"]) recordProbe(next, node, input[node], now);
           output = status(next, now);
         } else if (path === "/admin") {
-          if (input.action === 'set-funnel') {
-            if (!this.env.FUNNEL_CONTROL_TOKEN || !this.env.FUNNEL_URL) throw new Error('Funnel control is not installed');
+          if(witness && witness.status!=='completed' && !['witness-token','set-alerts','test-alerts'].includes(input.action))throw new Error('Witness installation pending; HA changes remain paused');
+          if(setup && setup.status!=='completed' && !['setup-token','setup-retry','set-alerts','test-alerts'].includes(input.action))throw new Error('Hoàn tất cài đặt hai node trước khi thao tác HA');
+          if(input.action==='witness-token') {
+            if(!witness || witness.claim || witness.status==='completed')throw new Error('No witness waiting for enrollment');
+            joinCode=crypto.randomUUID().replaceAll('-','')+crypto.randomUUID().replaceAll('-','');
+            witness.joinHash=await setupDigest(joinCode);witness.expiresAt=now+30*60000;
+          } else if(input.action==='setup-token') {
+            if(!setup || setup.status==='completed' || setup.nodes.backup.claim)throw new Error('Node B đã ghép hoặc không có thiết lập đang chờ');
+            joinCode=crypto.randomUUID().replaceAll('-','')+crypto.randomUUID().replaceAll('-','');
+            setup.joinHash=await setupDigest(joinCode);setup.expiresAt=now+30*60000;
+          } else if(input.action==='setup-retry') {
+            if(!setup || setup.status!=='failed')throw new Error('Không có bước cài đặt lỗi');
+            setup.status='running';setup.error=null;setup.attempt++;
+          } else if (input.action === 'set-funnel') {
+            if (!(this.env.FUNNEL_CONTROL_TOKEN && this.env.FUNNEL_URL) && !witness?.funnelUrls?.witness) throw new Error('Funnel control is not installed');
             setFunnel(funnelControl,input.enabled,now);
           } else if (input.action === "set-alerts") {
             configureNotifications(notifications, input);
@@ -192,18 +260,50 @@ export class HAController extends DurableObject {
       try { observeNotifications(notifications, status(next, now), now); }
       catch { notifications.lastError = "Không tạo được alert; điều phối vẫn tiếp tục"; }
       const writes = {};
+      extensionStable(witness,status(next,now));
+      if(witness?.status==='running' && witnessSteps(witness)[witness.index]?.[0]==='controller') {
+        admin(next,{action:'set-quorum-policy',clusterId:witness.clusterId,enabled:true,actor:'witness-installer'},now);
+        witness.index++;
+      }
+      if(witness?.status==='running' && witness.index===witnessSteps(witness).length && witnessHealthy(status(next,now))) {
+        const agents=status(next,now).agents;
+        if(['primary','backup'].every(n=>agents[n]?.metrics?.quorumAuthority?.fallbackEnabled===true)) {
+          const saved=witness.saved;witness.status='completed';witness.completedAt=now;
+          // Members have durable local credentials; keep CA/PKI only on A.
+          delete witness.results['primary-pki'];
+          admin(next,{action:'set-recovery',enabled:saved.recovery,actor:'witness-installer'},now);
+          if(saved.preference?.node)admin(next,{action:'set-preference',target:saved.preference.node,enabled:saved.preference.enabled,actor:'witness-installer'},now);
+          admin(next,{action:'set-auto',enabled:saved.auto,actor:'witness-installer'},now);
+        }
+      }
+      if(JSON.stringify(witness)!==JSON.stringify(this.witness))writes.witness=witness;
+      if(setup && setup.index===SETUP_STEPS.length && setup.status!=='completed' && setup.status!=='failed') {
+        const view=status(next,now);
+        if(view.ready && view.standbyEligible && next.owner==='primary' && next.epoch===1) {
+          admin(next,{action:'set-recovery',enabled:true,actor:'installer'},now);
+          admin(next,{action:'set-auto',enabled:true,actor:'installer'},now);
+          setup.status='completed';setup.completedAt=now;
+        }
+      }
       if (JSON.stringify(next) !== JSON.stringify(this.state)) writes.state = next;
       if (JSON.stringify(notifications) !== JSON.stringify(this.notifications)) writes.notifications = notifications;
       if (JSON.stringify(funnelProbe) !== JSON.stringify(this.funnelProbe)) writes.funnelProbe = funnelProbe;
       if (JSON.stringify(funnelControl) !== JSON.stringify(this.funnelControl)) writes.funnelControl = funnelControl;
+      if(JSON.stringify(setup)!==JSON.stringify(this.setup))writes.setup=setup;
       if (Object.keys(writes).length) await this.ctx.storage.put(writes);
       this.notifications = notifications;
       this.funnelProbe = funnelProbe;
       this.funnelControl = funnelControl;
+      this.setup=setup;
+      this.witness=witness;
       if (["/status", "/probe", "/admin"].includes(path)) {
         output.alerts = publicNotifications(notifications);
-        output.funnel = funnelStatus(this.env.FUNNEL_URL, funnelProbe, now, next.owner, next.epoch);
-        if (output.funnel) output.funnel.control = this.env.FUNNEL_CONTROL_TOKEN ? publicFunnelControl(funnelControl,now) : null;
+        output.funnel = funnelStatus(witness?.funnelUrls?.witness || this.env.FUNNEL_URL, funnelProbe, now, next.owner, next.epoch);
+        if (output.funnel) output.funnel.control = this.env.FUNNEL_CONTROL_TOKEN || witness?.funnelUrls?.witness ? publicFunnelControl(funnelControl,now) : null;
+        output.setup=publicSetup(setup);
+        output.witness=publicWitness(witness);
+        output.nodeFunnelUrls=witness?.funnelUrls || null;
+        if(joinCode)output.joinCode=joinCode;
       }
       this.state = next;
       try { await this.scheduleNotifications(); } catch { /* Retry scheduling on the next heartbeat. */ }
@@ -250,6 +350,11 @@ export default {
     try {
       const url = new URL(request.url);
       if (env.ADMIN_HOST && url.hostname === env.ADMIN_HOST) return adminUI(request, env);
+      if(['/__ha/setup-init','/__ha/setup-join','/__ha/setup-node','/__ha/witness-init','/__ha/witness-join','/__ha/witness-node'].includes(url.pathname) && request.method==='POST') {
+        if(['/__ha/setup-init','/__ha/witness-init'].includes(url.pathname) && !authorized(request,env.ADMIN_TOKEN))return json({error:'Unauthorized'},401);
+        const body=await request.text();if(body.length>70000)return json({error:'Payload too large'},413);
+        return call(env,url.pathname.replace('/__ha/','/'),JSON.parse(body));
+      }
       if (url.pathname === '/__ha/funnel-agent' && request.method === 'POST') {
         if (!authorized(request,env.FUNNEL_CONTROL_TOKEN)) return json({error:'Unauthorized'},401);
         const text=await request.text();

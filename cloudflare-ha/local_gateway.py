@@ -8,14 +8,16 @@ def validate_port(port):
     return port
 
 
-def render(template,port,token,trusted_gateway_ips=()):
+def render(template,port,token,trusted_gateway_ips=(),network_mode='tailscale'):
     validate_port(port)
     if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{32,128}',token):raise ValueError('Invalid origin credential format')
     if template.count('__PORT__')!=2 or template.count('__ORIGIN_TOKEN__')!=1:raise ValueError('Unexpected gateway template')
     import ipaddress
     trusted=[]
     for ip in trusted_gateway_ips:
-        if str(ipaddress.IPv4Address(ip))!=ip or ipaddress.ip_address(ip) not in ipaddress.ip_network('100.64.0.0/10'):raise ValueError('Trusted gateway must be a Tailscale IPv4 address')
+        address=ipaddress.IPv4Address(ip)
+        ranges=('100.64.0.0/10',) if network_mode=='tailscale' else ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16') if network_mode=='lan' else ()
+        if str(address)!=ip or not any(address in ipaddress.ip_network(n) for n in ranges):raise ValueError('Trusted gateway must use the selected private network')
         trusted.append('    "'+ip+':https" https;')
     anchor='    "::1:https" https;'
     if trusted:

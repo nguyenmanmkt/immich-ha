@@ -31,7 +31,7 @@ jobs:
       - name: Test JavaScript
         run: node --test tests/*.test.mjs
       - name: Check shell syntax
-        run: for file in node/*.sh node/app-run-v2 node/standby-run; do bash -n "$file"; done
+        run: for file in ../install.sh node/*.sh node/app-run-v2 node/standby-run; do bash -n "$file"; done
       - name: Check embedded UI
         run: |
           python tools/embed-ui.py

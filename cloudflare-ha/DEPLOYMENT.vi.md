@@ -1,421 +1,72 @@
 # Triển khai Immich HA
 
-Luồng chuẩn: hai Immich native LXC → Tailscale/Syncthing → Worker/gate → agent/runtime v2 → streaming → kiểm tra → bật tự động. Các lệnh ở dưới là thao tác thật; làm xong điểm kiểm tra của mỗi bước rồi mới tiếp tục.
+Chạy `init` trong LXC A, `join` trong LXC B; sau đó theo dõi trên dashboard. Hai node tự cài cục bộ qua HTTPS, không cần máy quản trị riêng hoặc SSH sang nhau. LAN dùng trực tiếp; Tailscale là lựa chọn khi cần kết nối hai mạng.
 
-Bản đầy đủ có ba phần: HA dữ liệu trên hai LXC, quorum/fallback trên hai node và witness, rồi gateway/Funnel dự phòng. Đọc [cách hoạt động](ARCHITECTURE.vi.md) trước khi chọn điểm bắt đầu. Mục 1–10 dựng HA dữ liệu; mục 11 bổ sung quorum và đường truy cập dự phòng. Hệ thống cũ đang chạy chỉ dùng mục cập nhật.
+**Bộ cài init/join chưa được nghiệm thu trên hai LXC cài mới.** Đã có kiểm thử tự động cho logic cài đặt, nhưng chưa đủ để gọi là cài thực tế thành công. Không chạy lại trên hệ thống HA đang hoạt động.
 
-## 0. Chọn đúng nơi chạy lệnh
+## 1. Chuẩn bị
 
-| Nơi chạy | Công việc |
-| --- | --- |
-| **Proxmox host** | Tạo LXC, gắn ổ/mountpoint, cấp TUN, bật onboot |
-| **Bên trong từng Immich LXC** | Immich, Tailscale, Syncthing, Nginx, agent, PostgreSQL |
-| **Máy quản trị có source/venv** | `.env`, `project.json`, deploy Worker, đóng gói và SSH rollout |
-| **Cloudflare dashboard** | Zone, Access, Tunnel Published Application và Worker Custom Domain |
+Thứ tự: **hai LXC Immich và ổ dữ liệu → Cloudflare/domain/API token → init A → join B → đăng nhập dashboard → nghiệm thu**. Witness/Funnel chỉ thêm sau khi hai node cơ bản đã ổn.
 
-Trước khi cài package, chạy `hostname` để biết đang ở host hay LXC. Ví dụ trên **Proxmox host**: `pct enter 113` để vào LXC A; ID phải được thay bằng ID thực tế của bạn. Tailscale dùng cho replication phải nằm trong LXC Immich, không chỉ nằm trên Proxmox host.
+- Hai LXC Debian amd64 đã có native Immich cùng phiên bản được hỗ trợ: 3.4.1 hoặc 3.4.2, PostgreSQL 16 và extension tương thích.
+- A chứa thư viện nguồn tại mount `/mnt/immich-storage`; B chưa có dữ liệu riêng, có mount cùng đường dẫn và đủ dung lượng.
+- IP hai LXC ổn định, thấy nhau qua LAN hoặc Tailscale đã đăng nhập. Thông TCP 22000 và 5433 giữa hai node; có Internet để cài package, kết nối Worker và Tunnel.
+- Cloudflare Account ID, Zone ID, API token đủ quyền; zone active và workers.dev đã bật. Chuẩn bị domain Immich, dashboard và email đăng nhập. Dùng tên/domain chưa được tài nguyên khác sử dụng.
+- Có backup độc lập trước khi chuyển database. Streaming/Syncthing không thay backup.
 
-Nếu hệ thống đã có `/etc/immich-ha/config.json` hoặc cụm PostgreSQL `16/ha`, chuyển tới [Cập nhật hệ thống đã chạy](#12-cập-nhật-hệ-thống-đã-chạy). Không chạy lại bootstrap/stage.
+Làm theo [chuẩn bị Cloudflare từng bước](CLOUDFLARE-SETUP.vi.md): bật workers.dev/Zero Trust, lấy Account ID/Zone ID và tạo API token đúng quyền. **Không cần tự tạo Worker hoặc trang quản lý trước**; script tạo chúng khi init. Dung lượng và hạn chế mạng nằm trong [hướng dẫn init/join](INSTALL.vi.md#điều-kiện).
 
-## 1. Hai Immich và ổ dữ liệu
+## 2. Cài hai node
 
-Môi trường đã kiểm chứng: Immich native 3.4.1 và nâng cấp theo recipe lên 3.4.2, PostgreSQL 16.16, user `immich`, Debian LXC amd64, dịch vụ Redis `redis-server.service`. Hai máy phải cùng kiến trúc, cùng bản Immich, cùng PostgreSQL 16 và các extension tương thích (đặc biệt vector/VectorChord). Bộ cài streaming hiện không hỗ trợ tự chuyển PostgreSQL major khác sang 16.
+Lấy cùng source/commit tại `/opt/immich-ha` trên hai LXC. Thay `<URL_REPO_HTTPS>` bằng repo của bạn.
 
-Có thể tạo LXC bằng [community-script Immich](https://community-scripts.github.io/ProxmoxVE/scripts?id=immich). Chạy lệnh upstream trên **Proxmox host**, không chạy bên trong một LXC đã có Immich:
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/immich.sh)"
-```
-
-Script upstream có thể đổi phiên bản/package/layout. Xác nhận cấu hình thực tế; không mặc nhiên coi bản mới nhất tương thích với bộ tích hợp này.
-
-Trên **mỗi LXC** kiểm tra:
+**Console LXC A:**
 
 ```bash
-hostname -I
-psql --version
-id immich
-findmnt -T /mnt/immich-storage
-mountpoint /mnt/immich-storage
-df -hT / /mnt/immich-storage
-grep '^IMMICH_MEDIA_LOCATION=' /opt/immich/.env
-systemctl is-active postgresql redis-server
+git clone <URL_REPO_HTTPS> /opt/immich-ha
+cd /opt/immich-ha
+bash install.sh init
 ```
 
-Media root chuẩn là **`/mnt/immich-storage`**, trong đó có `library/`, `upload/`, `thumbs/`, `encoded-video/`, `profile/`, `backups/`. Hai máy dùng cùng đường dẫn tuyệt đối vì database có thể lưu đường dẫn này. Không thêm nhầm một tầng `library/library`.
+Nhập mạng/IP, thông tin Cloudflare, domain và email theo wizard. Giữ Controller URL và mã join được in ra.
 
-- Gắn ổ thật/volume Proxmox vào media root; không dùng một thư mục trống trên rootfs để thay mount.
-- Dùng cấu hình mount bền vững để ổ xuất hiện sau reboot. Bind mount cần quyền UID/GID phù hợp với LXC unprivileged.
-- Nếu đã có ảnh ở chỗ khác, hoàn tất di chuyển theo [tài liệu storage](https://docs.immich.app/administration/backup-and-restore/) trước khi bắt đầu HA; chỉ sửa `.env` không tự sửa đường dẫn trong database.
-- Ban đầu chỉ `primary` chứa dữ liệu nguồn và được người dùng truy cập. `backup` là bản cài tương thích, không cho nhận upload độc lập.
-- Source rootfs cần thêm tối thiểu 3 GiB trống để staging; ổ ảnh cần đủ chỗ cho toàn thư viện, versioning và archive vật lý.
-
-**Đạt:** mount thật, phiên bản/extension khớp, media root đúng, xem được ảnh trên nguồn. Tạo một bản backup độc lập trước migration.
-
-## 2. Tailscale bên trong hai LXC
-
-Với unprivileged LXC, cấp `/dev/net/tun` từ **Proxmox host** theo [hướng dẫn Tailscale LXC](https://tailscale.com/docs/features/containers/lxc/lxc-unprivileged). Kiểm tra `pct config <ID>` và cấu hình hiện có trước khi thêm; không ghi đè toàn bộ features hoặc thêm mount TUN trùng lặp.
-
-Trên **mỗi LXC**, cài theo [hướng dẫn Linux chính thức](https://tailscale.com/docs/install/linux), ví dụ:
+**Console LXC B:**
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-systemctl enable --now tailscaled
-tailscale up --accept-dns=false
-tailscale ip -4
-ip -br addr show tailscale0
-tailscale status
+git clone <URL_REPO_HTTPS> /opt/immich-ha
+cd /opt/immich-ha
+bash install.sh join
 ```
 
-Đăng nhập cùng tailnet và đặt tên dễ phân biệt. Cần TUN/kernel networking để PostgreSQL bind IP Tailscale; không thay bằng userspace networking rồi mặc nhiên dùng cùng cấu hình bind.
+Nhập Controller URL, mã join và IP B. Mở dashboard bằng email đã chọn để theo dõi. Cài đặt có thời điểm dừng Immich A để chốt dữ liệu; không tự start dịch vụ trong lúc này.
 
-Ghi IP **của LXC**, ví dụ `100.64.10.10` và `100.64.10.20`; không nhầm với IP tail của host. Từ mỗi LXC kiểm tra peer:
+Script tạo Worker/Access/Tunnel, cài agent/gate/Syncthing, đồng bộ file và chuyển sang PostgreSQL streaming. B là replica, Immich B dừng khi ở vai trò dự phòng. [INSTALL.vi.md](INSTALL.vi.md) mô tả từng bước, đổi mã join và xử lý gián đoạn.
 
-```bash
-tailscale ping --c=1 --until-direct=false 100.64.10.20
-```
+## 3. Xác nhận trước khi sử dụng
 
-Thay IP bằng peer thật. Policy/firewall cần cho hai LXC kết nối TCP `22000` (Syncthing) và `5433` (replication). Máy quản trị cần TCP `22` tới LXC nếu SSH qua tailnet. Không mở PostgreSQL ra Internet. Direct thường tốt hơn relay; kiểm tra đường thực tế, không suy đoán từ địa chỉ LAN/IPv6.
+- Dashboard: một active, một dự phòng sẵn sàng; PostgreSQL nhận WAL, Syncthing đồng bộ.
+- Đăng nhập, xem và upload qua domain Immich.
+- Kiểm tra lịch backup SQL gốc trong Immich và bản sao trên node còn lại; thực hiện restore thử riêng.
+- Thử bàn giao chủ động, sau đó thử sự cố và quay lại; kiểm tra ảnh mới qua mỗi lần chuyển.
 
-**Đạt:** có `tailscale0`, hai LXC liên lạc được, máy quản trị SSH tới đúng hai LXC. Kiểm tra fingerprint SSH bằng console độc lập rồi pin vào `known_hosts`; không tắt host-key checking.
+Đây là các bài nghiệm thu cần làm trên hệ thống thực tế. Unit/controller tests không thay các bước này.
 
-## 3. Syncthing và đồng bộ file ban đầu
+## 4. Tùy chọn: dự phòng khi mất Cloudflare
 
-Nếu chưa có, trên **hai LXC**:
+Hai node cơ bản vẫn phụ thuộc Cloudflare để nhận quyền phục vụ. Khi không nhận được grant mới, gate đóng sau khi grant hết hạn; bộ cài không tự tạo đường truy cập hoặc bộ điều phối thay thế.
 
-```bash
-apt-get update
-apt-get install -y syncthing
-systemctl enable --now syncthing@immich.service
-```
+Nếu cần tiếp tục hoạt động khi Cloudflare gián đoạn, làm theo [WITNESS-SETUP.vi.md](WITNESS-SETUP.vi.md), từng bước không SSH:
 
-Giữ GUI ở loopback. Mở qua SSH từ **máy quản trị**, ví dụ hai cổng local khác nhau:
+1. Witness độc lập và quorum ba thành viên A/B/witness.
+2. Khóa chung bắt buộc, rồi bật fallback sau khi kiểm chứng fencing.
+3. Gateway LAN/Tailscale, tiếp đến Funnel chung nếu cần URL HTTPS dự phòng.
 
-```bash
-ssh -N -L 8385:127.0.0.1:8384 root@100.64.10.10
-ssh -N -L 8386:127.0.0.1:8384 root@100.64.10.20
-```
+Trên A chạy `bash install.sh witness-init`, trên witness chạy `bash install.sh witness-join`. Sau khi thử gateway thành công, tùy chọn chạy `bash install.sh funnel-enable` trên witness. Mạng quorum theo LAN/Tailscale đã chọn cho A/B; Funnel cần Tailscale riêng trên máy xuất bản URL.
 
-Đặt mật khẩu GUI. Kết nối hai Device ID; đặt địa chỉ peer `tcp://<IP-tail-peer>:22000`. Không chia sẻ API key hoặc config XML. Agent tự tìm config của instance `immich`; nếu dùng vị trí khác, điền `syncthing_config` trong node config sau khi xác minh.
+Cloudflare vẫn điều phối chính. Khi nó mất kết nối, logic fallback trong agent A/B dùng cùng khóa quorum; witness cung cấp thành viên quorum và gateway, không phải một Immich thứ ba. Bộ cài mở rộng mới có tests, **chưa nghiệm thu trên ba LXC mới**. Bản live đã triển khai lớp này bằng tooling cũ; không chạy lại để đổi cách cài.
 
-Tạo hai folder với **cùng ID trên hai máy**:
+## Hệ thống đã chạy
 
-| Folder ID | Đường dẫn trên cả hai LXC | Nguồn ban đầu | Dự phòng ban đầu |
-| --- | --- | --- | --- |
-| `immich-library` | `/mnt/immich-storage` | Send Only | Receive Only |
-| `immich-database` | `/mnt/immich-storage/backups/postgres` | Send Only | Receive Only |
+Không dùng `init/join` để cập nhật hoặc sửa lỗi bản live. Giữ nguyên `.env`, `project.json`, `generated/`, khóa, định danh Durable Object và database hiện có. Dùng [runbook bảo trì](MANUAL-DEPLOYMENT.vi.md#12-cập-nhật-hệ-thống-đã-chạy); các tool SSH trong runbook là công cụ triển khai/bảo trì, không phải giao tiếp runtime giữa hai node.
 
-Tạo sẵn thư mục backup, bảo đảm user chạy Syncthing đọc/ghi được các thư mục cần thiết và user `immich` đọc/ghi được media. Với bind mount unprivileged cần xử lý UID/GID; không chạy `chmod -R 777` hoặc `chown -R` cả ổ một cách mù quáng. Đường dẫn nhận mặc định `~/Immich Library` phải đổi thành đúng media root trước khi đồng bộ.
-
-Trong Ignore Patterns của **folder thư viện trên cả hai máy**, ban đầu đặt:
-
-```text
-/encoded-video/.immich
-/library/.immich
-/profile/.immich
-/thumbs/.immich
-/upload/.immich
-/lost+found
-/icloud-download
-/backups
-```
-
-Folder `immich-database` là folder riêng nên vẫn truyền nội dung `backups/postgres`. Không chia sẻ `/var/lib/postgresql`, `backups/pg-stream` hoặc archive recovery. Sau khi hệ thống hoạt động, bước 9 sẽ mở riêng các file SQL backup trong gốc `backups/`, giữ các archive khác bị loại trừ. `.stignore` không tự truyền giữa hai máy; [quy tắc đầu tiên khớp quyết định](https://docs.syncthing.net/users/ignoring.html).
-
-**Đạt:** hai folder đều đúng path, đúng Device ID, không còn lỗi quyền/marker, nguồn Send Only và đích Receive Only, ảnh/video đã đồng bộ. Không bấm Override/Revert khi chưa xác định rõ nguồn dữ liệu.
-
-## 4. Cấu hình máy quản trị
-
-Từ repo, tạo venv và file riêng như [README](../README.md). Dùng `.venv\Scripts\Activate.ps1` trên PowerShell hoặc `source .venv/bin/activate` trên Linux.
-
-Trong `project.json` điền:
-
-- `workerName`: tên deployment; giữ ổn định khi cập nhật.
-- `publicHost`: ví dụ `photos.example.org`.
-- `adminHost`: ví dụ `immich-ha.example.org`.
-- Hai `origins`: ví dụ `https://immich-primary.example.org` và `https://immich-backup.example.org`.
-- Metadata hai node: tên, IP thực sự có trên LXC, container ID.
-- Access Team domain, Application AUD và email quản trị.
-
-Trong `.env` điền account/token Cloudflare; SSH cho hai LXC; Client ID **và Client Secret** nếu origins được Access Service Auth bảo vệ. Xem [CONFIG.vi.md](CONFIG.vi.md). Máy quản trị phải có đường SSH tới cả hai LXC; dùng `SSH_JUMP_*` nếu cần một jump host chung.
-
-## 5. Cloudflare Worker, domain và Access
-
-### Bốn hostname, hai loại đích
-
-| Hostname mẫu | Đích | Bảo vệ |
-| --- | --- | --- |
-| `photos.example.org` | **Worker Custom Domain** | Đăng nhập Immich; không áp trang Access tương tác gây chặn app |
-| `immich-ha.example.org` | **Worker Custom Domain** | Access ứng dụng quản trị, email allowlist |
-| `immich-primary.example.org` | Tunnel của LXC A → `http://127.0.0.1:8080` | Origin token/epoch; thêm Access Service Auth nếu dùng |
-| `immich-backup.example.org` | Tunnel của LXC B → `http://127.0.0.1:8080` | Tương tự A |
-
-`adminHost` không cần đưa vào Tunnel. Domain Immich công khai **không trỏ trực tiếp tới cổng 2283 của một máy**, vì như vậy sẽ bỏ qua điều phối.
-
-### Access
-
-Tạo application bảo vệ dashboard, lấy **Team domain** (`...cloudflareaccess.com`) và **Application AUD** của application đó vào `project.json`. Đây khác với Service Token. Policy email phải khớp `access.emails`.
-
-Nếu có wildcard Access bao phủ tất cả subdomain, tạo cấu hình cụ thể cho các hostname này để app Immich và Worker không bị chuyển tới trang login. Để bảo vệ origins bằng Access, dùng policy **Service Auth → Include Service Token** và điền đủ Client ID/Secret vào `.env`; không thay bằng policy đăng nhập email. Truy cập origin trực tiếp bằng browser có thể trả 403 là đúng. Không bỏ gate chỉ để làm origin mở công khai.
-
-### Deploy Worker
-
-Trên **máy quản trị**, từ `cloudflare-ha/`:
-
-```bash
-python deploy.py
-python admin.py recovery-off
-```
-
-Token Cloudflare phải có quyền Workers cần thiết trong đúng account. Công cụ tạo Worker/SQLite Durable Object, biến/secret và Cron, sinh dữ liệu riêng vào `generated/`. **Nó không tạo Access, Tunnel hoặc Custom Domain.** Không xóa `generated/` để chạy lại. Tắt recovery lúc cài để tự chuẩn bị dự phòng không chen vào các bước bootstrap thủ công; auto-failover OFF không đồng nghĩa auto-recovery cũng OFF.
-
-Trong Cloudflare dashboard, gắn `publicHost` và `adminHost` vào Worker bằng **Custom Domains**. Xem [tài liệu Cloudflare](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/): hostname có CNAME cũ phải được xử lý trước; không xóa hostname Tunnel của hai origins.
-
-Tạo hai Tunnel độc lập và cài `cloudflared` như hướng dẫn Cloudflare. Nếu dùng `127.0.0.1:8080`, connector phải chạy trong chính LXC có Nginx đó. Tạo Published Application cho từng origin như bảng. Không công khai `8384`, `9081` hoặc `5433` qua Tunnel.
-
-## 6. Cài node Immich HA trên hai LXC
-
-**Điều kiện:** đã hoàn thành bước 1–5: hai Immich có cùng media root, ảnh đã đồng bộ, Worker/Tunnel/Access đã cấu hình, SSH đã xác minh host key và có `generated/primary/config.json` cùng `generated/backup/config.json`.
-
-Chỉ dùng mục 6–7 cho **cài mới HA**: cả hai LXC chưa có `/etc/immich-ha/config.json`. Nếu đã có, dùng mục 12, không ghi đè config.
-
-| Máy | ID dùng trong lệnh | Config phải copy |
-| --- | --- | --- |
-| LXC A đang chứa dữ liệu nguồn | `primary` | `generated/primary/config.json` |
-| LXC B sẽ nhận dữ liệu dự phòng | `backup` | `generated/backup/config.json` |
-
-Các lệnh dưới chạy **trên máy quản trị, trong thư mục `cloudflare-ha/`, đã kích hoạt venv**. Lệnh `ssh` tự chạy phần cài đặt bên trong LXC; không mở shell Proxmox host để chạy installer.
-
-### 6.1. Khai báo địa chỉ hai LXC
-
-Ví dụ PowerShell; thay hai IP mẫu bằng địa chỉ SSH thật, khớp `SSH_PRIMARY_HOST` / `SSH_BACKUP_HOST` trong `.env`:
-
-```powershell
-$NodeA = 'root@192.0.2.10'
-$NodeB = 'root@192.0.2.20'
-```
-
-Nếu máy quản trị dùng Bash, khai báo `NodeA='root@192.0.2.10'` và `NodeB='root@192.0.2.20'`; các lệnh SSH/SCP/Python sau dùng giống nhau. SCP/SSH dùng cấu hình OpenSSH của máy quản trị, không tự đọc mật khẩu/key trong `.env`; cấu hình `~/.ssh/config` nếu cần key/port/jump host riêng.
-
-### 6.2. Copy và cài trên LXC A
-
-```powershell
-ssh $NodeA 'install -d -m 700 /root/immich-ha-install'
-scp node/install-node.sh node/agent.py node/standby-run node/immich-ha.nginx.conf node/enable-enforcement.sh "${NodeA}:/root/immich-ha-install/"
-scp generated/primary/config.json "${NodeA}:/root/immich-ha-install/config.json"
-ssh $NodeA 'bash /root/immich-ha-install/install-node.sh primary'
-```
-
-Chờ xuất hiện **`INSTALLED primary IN OBSERVE MODE`** rồi mới tiếp tục.
-
-### 6.3. Copy và cài trên LXC B
-
-```powershell
-ssh $NodeB 'install -d -m 700 /root/immich-ha-install'
-scp node/install-node.sh node/agent.py node/standby-run node/immich-ha.nginx.conf node/enable-enforcement.sh "${NodeB}:/root/immich-ha-install/"
-scp generated/backup/config.json "${NodeB}:/root/immich-ha-install/config.json"
-ssh $NodeB 'bash /root/immich-ha-install/install-node.sh backup'
-```
-
-Chờ **`INSTALLED backup IN OBSERVE MODE`**. Hai config khác khóa/ID; không copy config A cho B.
-
-### 6.4. Kiểm tra đã cài
-
-Vẫn trên máy quản trị:
-
-```powershell
-ssh $NodeA 'systemctl is-active nginx immich-ha-agent'
-ssh $NodeB 'systemctl is-active nginx immich-ha-agent'
-python admin.py probe
-python admin.py status --compact
-python check-public.py
-```
-
-**Đạt:** Nginx/agent cả hai máy `active`, status có heartbeat hai node, domain chính ping được qua Worker về `primary`, auto vẫn OFF. Giai đoạn này agent chỉ quan sát; chưa yêu cầu `standbyEligible: true` và chưa có quyền tự chuyển máy. Lỗi IP, mount hoặc 403/Access phải xử lý trước bước 7.
-
-## 7. Bật runtime điều khiển và tạo dự phòng lần đầu
-
-Vẫn dùng terminal máy quản trị và hai biến `$NodeA`, `$NodeB` ở bước 6.
-
-### 7.1. Cài runtime v2 tự động qua SSH
-
-```powershell
-python tools/package-nodes.py
-python ssh_nodes.py primary --upgrade
-python ssh_nodes.py backup --upgrade
-```
-
-Lệnh đầu tạo hai ZIP riêng trong `generated/`; hai lệnh sau tự upload, giải nén thành từng file và chạy installer đúng LXC bằng thông tin SSH trong `.env`. Không cần tự copy ZIP. Chờ từng lệnh thành công; runtime báo **`UPGRADE V2 INSTALLED`**. Nó thay service Immich gốc bằng `immich-ha-app.service`, có restart app; auto phải OFF và không có job/pending.
-
-### 7.2. Bật kiểm tra quyền phục vụ trên cả hai máy
-
-File cần dùng đã được copy ở bước 6, không phải copy lại:
-
-```powershell
-ssh $NodeA 'bash /root/immich-ha-install/enable-enforcement.sh'
-ssh $NodeB 'bash /root/immich-ha-install/enable-enforcement.sh'
-python admin.py probe
-python admin.py status --compact
-```
-
-Chờ thông báo **`Enforcement enabled for primary`** / **`backup`**. Script chỉ tiếp tục khi domain chính đã đi qua Worker về `primary`; app chuyển sang chỉ nghe loopback. Đây là enforcement origin của hai node, chưa phải lớp quorum ở mục 11. Chưa bật auto.
-
-### 7.3. Tạo bản dự phòng từ nguồn A
-
-```powershell
-python admin.py prepare --target backup
-python admin.py status --compact
-```
-
-Chờ job **`succeeded`**, kiểm tra `ready: true`, `standbyEligible: true`, heartbeat mới và Syncthing không pause/lỗi. Nếu job còn chạy, dùng dashboard hoặc chạy lại lệnh status; không chạy thêm job prepare trùng.
-
-**Hoàn tất cài node HA trên hai máy.** Tiếp tục bước 8 để chuyển PostgreSQL sang streaming. Lần prepare này dùng dump để bootstrap; sau cutover streaming, các lần bàn giao dùng WAL/manifest. Không dùng script standby cá nhân cũ hoặc bật auto trước khi hoàn thành kiểm tra streaming.
-
-## 8. PostgreSQL streaming và bàn giao WAL
-
-Theo [STREAMING.vi.md](STREAMING.vi.md), trên **máy quản trị**:
-
-```bash
-python tools/streaming-upgrade.py stage
-python tools/streaming-stage-test.py
-python tools/streaming-cutover.py
-python tools/streaming-upgrade.py status
-python check-public.py
-```
-
-`stage` tạo riêng cluster `16/ha:5433`, giữ `16/main:5432`. `streaming-stage-test.py` chỉ dành cho cụm chưa enabled. `cutover` dừng ghi ngắn để chốt bản copy cuối, giữ rollback, rồi chuyển app sang `immich_stream`. Đây không phải installer lặp lại được tùy ý.
-
-Nếu cutover đã bật streaming nhưng hết thời gian xác nhận, xem status/log; sau khi hai máy đã khỏe, `python tools/streaming-finalize.py` kiểm tra rồi khôi phục tùy chọn đã lưu. Nó không khắc phục một database lỗi bằng cách bỏ qua kiểm tra.
-
-**Đạt:** cùng system identifier, standby `inRecovery: true`, `receiverConnected: true`, không còn WAL đã nhận chờ replay; app source đang dùng 5433; domain HTTP 200. Backend hiện tại báo `handoverVersion: 2`, `fastHandoverVersion: 1`. Standby không chạy app Immich, agent dùng health PostgreSQL/mount.
-
-## 9. Backup SQL và ngừng dump định kỳ
-
-Trong **Immich admin**, bật/xác nhận lịch backup SQL gốc và chính sách giữ mong muốn. Xác nhận file `.sql.gz` thực sự được tạo trong `/mnt/immich-storage/backups`, không chỉ mới lưu lịch.
-
-Trên **máy quản trị**:
-
-```bash
-python tools/sync-native-backups.py
-```
-
-Tool sửa ignore có chọn lọc trên hai máy để truyền SQL backup theo role, không mở thư mục PGDATA/archive. Xác nhận file trên hai máy, đối chiếu checksum và thử restore vào database/cụm riêng khi cần.
-
-Nếu chọn bỏ dump HA theo giờ, trên **cả hai LXC**:
-
-```bash
-touch /etc/immich-ha/disable-scheduled-dump
-chmod 600 /etc/immich-ha/disable-scheduled-dump
-systemctl disable --now immich-ha-dump.timer
-```
-
-Marker được installer/runtime tôn trọng. Không ảnh hưởng lịch SQL gốc Immich. Trong chế độ streaming mới, job bàn giao cũng không tạo dump. Các dump migration/legacy đã có không tự bị xóa.
-
-Sau khi đã thử streaming, có backup hợp lệ và kiểm tra không còn client dùng cluster cũ, có thể đặt `/etc/postgresql/16/main/start.conf` thành `manual`, chạy `systemctl daemon-reload` rồi `pg_ctlcluster 16 main stop` để giảm RAM. Giữ data directory; không stop `postgresql.service` chung hoặc cluster `ha`. Không trỏ app trở về database cũ sau khi cụm mới đã nhận ghi.
-
-## 10. Bật tự động và thử nghiệm
-
-Trên **máy quản trị**:
-
-```bash
-python admin.py recovery-on
-python admin.py preference-on --target primary
-python admin.py auto-on
-python admin.py status --compact
-```
-
-Recovery và tự trở về máy ưu tiên có công tắc riêng trên UI; Slack cấu hình tại đó. Tự chuyển khi sự cố không có công tắc tắt trên dashboard: dùng `auto-on` sau khi source/standby và gate được xác nhận, rồi giữ bật trong vận hành. Script bảo trì/rollout vẫn có thể tạm khóa tự động. `preference-on` là tùy chọn; bỏ qua nếu không muốn tự trở về một máy cố định. Luôn xem status trước thao tác.
-
-Thử có kiểm soát: chuyển active chủ động A → B → A, rồi thử sự cố và máy cũ trở lại; upload/xem ảnh sau mỗi lần. Bàn giao nhanh chỉ rút thời gian fencing khi có chứng cứ dừng nguồn, không bỏ kiểm tra WAL/file hay thời gian startup. Ghi lại kết quả thật; không gọi test controller là test failover thực tế.
-
-## 11. Witness, quorum và đường truy cập dự phòng
-
-Phần này mở rộng hệ thống streaming đã khỏe/idle. Làm từng checkpoint trong [QUORUM.vi.md](QUORUM.vi.md), kiểm tra xong mới sang bước kế. Không paste cả quy trình như một script liên tục.
-
-### Witness và kết nối
-
-Tạo LXC Debian 13 amd64 trên máy vật lý thứ ba, độc lập với hai host Immich. Cấu hình đã dùng để kiểm tra: 1 vCPU, 1 GiB RAM, rootfs 8 GiB; không cần ổ ảnh hoặc Immich/PostgreSQL trên witness. Nó không cần cùng cluster Proxmox; quorum Immich khác QDevice Proxmox.
-
-Cấp TUN từ host như bước 2, rồi cài SSH/Tailscale **bên trong witness**, đăng nhập cùng tailnet và kiểm tra kết nối tới hai LXC. Kiểm tra hostname trước khi cài để không làm nhầm trên host. Đồng bộ giờ; xác minh/pin SSH fingerprint bằng console. Điền `SSH_COORDINATOR_*` và key trong `.env`; tên coordinator ở đây chỉ là cấu hình SSH witness, không thay vai trò chính của Cloudflare.
-
-| Kết nối | Phạm vi |
-| --- | --- |
-| TCP 22 | Máy quản trị/jump host tới ba LXC |
-| TCP 2379, 2380 | Ba thành viên quorum qua Tailscale/mTLS, không public |
-| TCP 5433, 22000 | Replication/Syncthing giữa hai Immich node |
-| TCP 8090 mặc định | Client LAN/Tailscale tới gateway; witness tới gateway node |
-| HTTPS outbound | Worker API, Tailscale, nguồn package khi triển khai |
-
-### Quorum và fallback
-
-Từ `cloudflare-ha/` trên máy quản trị, theo thứ tự:
-
-| Bước | Lệnh | Điểm kiểm tra |
-| --- | --- | --- |
-| 1 | `python tools/quorum-preflight.py` | Danh tính, Tailscale/SSH, một writer và replica đúng lineage |
-| 2 | `python tools/quorum-stage.py --install` | etcd riêng, mTLS, chưa cấp quyền active |
-| 3 | `python tools/quorum-stage.py --check` | Ba member/endpoint khỏe |
-| 4 | `python tools/quorum-shadow.py --deploy` | Observer/CAS/TTL shadow, chưa đổi grant |
-| 5 | `python tools/quorum-shadow.py --check` | Quan sát đúng owner/epoch |
-| 6 | `python tools/quorum-enforce.py --deploy` | Grant quorum bắt buộc |
-| 7 | `python tools/quorum-enforce.py --check` | Marker/proof/lease và PostgreSQL đúng |
-| 8 | `python tools/quorum-fallback.py --deploy` | Bật fallback và đối chiếu CF |
-| 9 | `python tools/quorum-fallback.py --check` | Authority/quorum và agent hợp lệ |
-
-Giữ cluster ID, CA và key trong `generated/`; không tạo lại khi lỗi. Test dừng quorum witness chỉ dành cho giai đoạn isolated. Bài chặn heartbeat CF là checkpoint riêng có timer phục hồi, không chạy trong mỗi lần triển khai. TLS compat chỉ dành cho cụm cũ thiếu AKI theo tài liệu, không chạy repair lên cụm mới vì thấy tên tool.
-
-### Gateway và Funnel
-
-| Bước | Lệnh triển khai | Người vận hành thử trước khi tiếp tục |
-| --- | --- | --- |
-| 1 | `python tools/install-local-gateway.py --deploy` | App qua LAN/Tailscale node active; standby đóng |
-| 2 | `python tools/install-funnel.py --deploy` | URL riêng active: login/xem/upload qua 4G |
-| 3 | `python tools/install-witness-gateway.py --deploy` | Gateway witness đúng owner/epoch |
-| 4 | `python tools/install-witness-funnel.py --deploy` | URL chung qua Internet và giữ URL khi đổi active |
-| 5 | `python tools/install-funnel-control.py --deploy` | ⚙ có URL/IP đúng, witness xác nhận Funnel đang bật |
-
-Bốn tool đầu có `--check`. Tailscale có thể yêu cầu chủ tailnet phê duyệt HTTPS/Funnel qua link CLI; hoàn tất rồi tiếp tục. Tool giữ Serve hiện có, không reset toàn bộ route. Không public 2283, 9081, PostgreSQL hay etcd.
-
-Bước điều khiển cần Funnel chung/riêng đã được xác nhận và Funnel chung đang bật. Nó bổ sung metadata URL/IP, thêm token riêng, cập nhật Worker và cài timer witness. Timer lấy yêu cầu khoảng 15 giây/lần, chỉ đổi đúng listener chung và báo xác nhận; không đổi role/grant hoặc service Immich. Tắt URL chung ngắt người đang dùng URL đó, giữ đường CF và Funnel riêng.
-
-Chỉ muốn giám sát: đặt `funnelUrl` trong project rồi `python deploy.py --update`, không cần timer. Probe Internet mỗi phút dùng nonce tránh cache; kết quả quá 3 phút đánh dấu cũ. Khi CF mất, monitor/dashboard có thể mất; witness giữ Funnel hiện có. Xem [CONFIG.vi.md](CONFIG.vi.md).
-
-### Nghiệm thu
-
-Thử bàn giao chủ động, sự cố một LXC, máy đó trở lại và chuẩn bị dự phòng, tự trở về máy ưu tiên, URL Funnel chung, lỗi đường điều phối CF rồi khôi phục. Sau mỗi bước xác nhận xem/upload, một PostgreSQL writable, standby gate đóng, WAL/file đủ và job không lỗi. Tắt/bật Funnel là bài thử riêng do người vận hành chọn thời điểm.
-
-Ghi rõ bài đã thử thật và bài chỉ mô phỏng. Chặn heartbeat agent không chứng minh mọi kiểu outage Cloudflare/network partition đã được kiểm tra.
-
-## 12. Cập nhật hệ thống đã chạy
-
-Không chạy lại `install-node.sh`, `configure.py`, `stage` hoặc `cutover`.
-
-| Phạm vi | Lệnh trên máy quản trị |
-| --- | --- |
-| Worker/UI | `python deploy.py --update` |
-| Agent streaming và bàn giao WAL/nhanh | `python tools/upgrade-wal-handover.py` |
-| Runtime khi đã bật quorum/fallback | `python tools/quorum-fallback.py --deploy`, hai node khỏe/idle, theo checkpoint 3c; không chạy lại stage |
-| Kiểm tra quorum/fallback | `python tools/quorum-fallback.py --check` |
-| Cài/cập nhật điều khiển Funnel | `python tools/install-funnel-control.py --deploy`, Funnel chung đang bật và cấu hình cũ khớp |
-| Chỉ build ZIP node | `python tools/package-nodes.py` |
-| Kiểm tra public | `python check-public.py` |
-| Cài tính năng nâng cấp Immich trên dashboard | `python tools/upgrade-immich-ha.py --via primary --deploy` |
-
-Nâng phiên bản ứng dụng Immich là quy trình riêng: đọc [IMMICH-UPGRADE.vi.md](IMMICH-UPGRADE.vi.md). Deploy feature không tự nâng Immich. Trên UI, chuẩn bị staging trước, sau đó xác nhận áp dụng cho cả hai máy; không dùng updater gốc trực tiếp với các service/database HA.
-
-Rollout runtime yêu cầu hệ thống khỏe/idle, giữ module cũ và tạm tắt tự động, cập nhật executable agent **và** module Python, sau đó mới cập nhật Worker và khôi phục tự động. Nếu kiểm tra thất bại, xem status; không tự bật auto khi chưa đủ điều kiện. `.env`, `project.json`, `generated/`, node IDs và Durable Object storage ID phải được giữ nguyên.
-
-## Khi có lỗi
-
-| Hiện tượng | Kiểm tra trước |
-| --- | --- |
-| Origin mở trực tiếp báo 403 | Có thể đúng: Access Service Auth/gate đang chặn. Dùng `admin.py probe` để kiểm tra request Worker có token |
-| Domain Immich không vào được sau xóa Tunnel cũ | Kiểm tra publicHost có Worker Custom Domain; đừng gắn lại publicHost trực tiếp vào LXC |
-| Agent không enforce | `.env` có đúng một `IMMICH_HOST=127.0.0.1`, socket 2283 chỉ loopback, module/executable đồng bộ |
-| Thiếu `.immich` / quyền file | Kiểm tra đúng mount, UID/GID và marker; không tạo marker trên mount bị mất |
-| Syncthing stopped/marker missing | Kiểm tra folder path, mount và `.stfolder`; không reset index để che lỗi sai đường dẫn |
-| SSH bị từ chối host key | Xác minh fingerprint qua console và cập nhật pin đúng máy; không dùng AutoAddPolicy để bỏ kiểm tra |
-| Replica mất nguồn | Tailscale/ACL, PostgreSQL 5433, `receiverConnected`; không promote nếu seed/WAL chưa xác nhận |
-| Job lỗi sau chốt ghi | Giữ đóng nguồn, đọc job/log; chỉ dùng Resume đúng owner/epoch khi đủ điều kiện |
-
-Xem [runbook vận hành](DASHBOARD.vi.md) để lấy log. Các hostname, IP và ID trong tài liệu là ví dụ; thay trong cấu hình riêng, không hardcode vào source.
+Vận hành: [DASHBOARD.vi.md](DASHBOARD.vi.md). Cơ chế hoạt động: [ARCHITECTURE.vi.md](ARCHITECTURE.vi.md).

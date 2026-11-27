@@ -1,5 +1,7 @@
 # Lớp điều phối dự phòng khi Cloudflare gián đoạn
 
+**Cài mới sau init/join:** dùng [WITNESS-SETUP.vi.md](WITNESS-SETUP.vi.md), gồm `witness-init`/`witness-join`, LAN hoặc Tailscale, không SSH. Phần CLI bên dưới là runbook triển khai cũ/bảo trì chuyên biệt; không chạy nối tiếp để cài lại một cụm mới đã ghép witness. Kiến trúc, giới hạn và các checkpoint trong tài liệu này vẫn là tham chiếu cho bản live cũ.
+
 Mục tiêu đã chốt: Cloudflare điều phối chính; ba thành viên `primary`, `backup`, `witness` giữ khóa phối hợp theo đa số 2/3. Witness ở máy vật lý độc lập với hai Immich. Funnel chỉ bổ sung đường truy cập công khai, không tự cấp quyền active. IP LAN/Tailscale vẫn cần gateway kiểm tra grant và đăng nhập Immich.
 
 Triển khai theo checkpoint: isolated → shadow 3a → khóa bắt buộc 3b → fallback 3c → gateway/Funnel 4a–4d → giám sát/điều khiển 4e. Cài observer chưa bật enforcement/fallback; bật fallback chưa tự cài đường truy cập thay thế. Cloudflare vẫn điều phối chính. Tổng quan tại [ARCHITECTURE.vi.md](ARCHITECTURE.vi.md), thứ tự end-to-end tại [DEPLOYMENT.vi.md](DEPLOYMENT.vi.md).

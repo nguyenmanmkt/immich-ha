@@ -165,7 +165,8 @@ function renderServer(node) {
   const dbText = stream ? !fresh ? 'Chưa xác nhận' : stream.available === false ? 'Chưa kết nối' : owner ? 'Nguồn dữ liệu' : stream.receiverConnected ? stream.pendingBytes > 0 ? `Đang áp dụng · ${bytes(stream.pendingBytes)}` : 'Đang nhận WAL' : 'Mất kết nối nguồn' : time(owner ? metrics.backup?.lastDumpAt : metrics.seed?.appliedAt);
   keyMetrics.append(keyMetric('sync', 'Syncthing', syncText, !fresh || !library || library.paused || !!library.error || metrics.syncthing?.peerConnected === false),
     keyMetric('database', dbLabel, dbText, stream && !streamOk));
-  keyMetrics.append(keyMetric('network', 'Tailscale', tailText, tailFresh && !['direct', 'relay'].includes(tail.state)));
+  const lan=stream?.networkMode==='lan';
+  keyMetrics.append(keyMetric('network', lan?'Kết nối LAN':'Tailscale',lan?(!fresh?'Chưa xác nhận':metrics.syncthing?.peerConnected?'Đã kết nối':'Chưa kết nối'):tailText,lan?!fresh || metrics.syncthing?.peerConnected===false:tailFresh && !['direct','relay'].includes(tail.state)));
   keyMetrics.append(keyMetric('pulse', 'Heartbeat', time(agent?.at), !fresh));
   const details = el('details', 'node-details'); details.open = expandedNodes.has(node);
   details.addEventListener('toggle', () => { if (details.open) expandedNodes.add(node); else expandedNodes.delete(node); });
@@ -517,6 +518,31 @@ function renderFunnel() {
 
 function render() {
   renderFunnel();
+  const witness=state.witness;
+  $('#witness-panel').hidden=!witness;
+  if(witness) {
+    const complete=witness.status==='completed';
+    const labels={inspect:'Kiểm tra máy',pki:'Tạo chứng thư',install:'Cài quorum',start:'Khởi động quorum',check:'Kiểm tra quorum',enforce:'Bật khóa chung','grant-check':'Xác nhận quyền',policy:'Cấu hình fallback',fallback:'Bật dự phòng điều phối','fallback-check':'Kiểm tra fallback',gateway:'Cài gateway',router:'Cài gateway chung','gateway-check':'Kiểm tra đường truy cập'};
+    $('#witness-label').textContent=complete?'Witness · '+(witness.networkMode==='lan'?'LAN':'Tailscale'):labels[witness.step] || 'Ghép witness';
+    $('#witness-stage').textContent=complete?'ĐÃ CẤU HÌNH':witness.status==='failed'?'CẦN KIỂM TRA':witness.joined?'ĐANG CÀI':'CHỜ WITNESS';
+    $('#witness-detail').textContent=witness.error || (complete?'Gateway: http://'+witness.addresses.witness+':8090 · Funnel bật riêng trên witness.':witness.joined?'Các máy tự cài qua HTTPS. Tạm dừng chuyển máy trong lúc thiết lập.':'Trên witness chạy bash install.sh witness-join.');
+    $('#witness-progress').hidden=complete;$('#witness-progress').max=witness.total;$('#witness-progress').value=witness.index;
+    $('#witness-token').hidden=!!witness.joined || complete;$('#witness-token').disabled=submitting;
+    if(witness.joined){$('#witness-code').value='';$('#witness-code').hidden=true;}
+  }
+  const setup=state.setup;
+  $('#setup-panel').hidden=!setup || setup.status==='completed';
+  if(setup) {
+    $('#setup-label').textContent=setup.label;
+    $('#setup-stage').textContent=setup.status==='failed'?'CẦN XỬ LÝ':setup.joined?'ĐANG CÀI':'CHỜ NODE B';
+    $('#setup-progress').max=setup.total;$('#setup-progress').value=setup.index;
+    $('#setup-detail').textContent=setup.error || (!setup.joined?'Trên B chạy bash install.sh join. Controller: '+setup.controller:'Hai node tự cài cục bộ và trao đổi HTTPS với Worker.');
+    $('#setup-token').hidden=setup.joined || setup.status==='completed';
+    $('#setup-token').disabled=submitting;
+    if(setup.joined){$('#setup-code').value='';$('#setup-code').hidden=true;}
+    $('#setup-retry').hidden=setup.status!=='failed';
+    $('#setup-retry').disabled=submitting;
+  }
   $("#servers").replaceChildren(...nodes.map(renderServer));
   if (!target || displayedOwner !== state.owner) target = nodes.find((node) => node !== state.owner);
   displayedOwner = state.owner;
@@ -646,6 +672,21 @@ $("#delete-alerts").addEventListener("click", () => sendAction({ action: "set-al
 $('#funnel-toggle').addEventListener('change', event=>{
   const enabled=event.target.checked;event.target.checked=state.funnel?.control?.enabled !== false;
   sendAction({action:'set-funnel',enabled});
+});
+$('#setup-retry').addEventListener('click',()=>sendAction({action:'setup-retry'}));
+$('#witness-token').addEventListener('click',async()=>{
+  try {
+    const result=await api('/api/action',{action:'witness-token'});
+    $('#witness-code').value=result.joinCode;$('#witness-code').hidden=false;
+    delete result.joinCode;state=result;render();toast('Mã witness có hạn 30 phút.');
+  } catch(error){toast(error.message);}
+});
+$('#setup-token').addEventListener('click',async()=>{
+  try {
+    const result=await api('/api/action',{action:'setup-token'});
+    $('#setup-code').value=result.joinCode;$('#setup-code').hidden=false;
+    delete result.joinCode;state=result;render();toast('Mã mới có hạn 30 phút; mã cũ đã vô hiệu.');
+  }catch(error){toast(error.message);}
 });
 for (const id of ['priority', 'slack', 'funnel']) {
   $('#' + id + '-settings-button').addEventListener('click', () => {

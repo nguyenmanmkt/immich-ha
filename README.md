@@ -1,10 +1,12 @@
 # Immich HA
 
-Hệ thống dự phòng cho **hai Immich native chạy trong Proxmox LXC**: PostgreSQL streaming truyền database, Syncthing truyền ảnh/video, Cloudflare Worker điều phối chính và cung cấp dashboard. Quorum etcd ba thành viên giữ khóa chung để agent tiếp tục điều phối khi mất Cloudflare. Gateway và Tailscale Funnel cung cấp đường truy cập dự phòng.
+Hệ thống dự phòng cho **hai Immich native chạy trong Proxmox LXC**: PostgreSQL streaming truyền database, Syncthing truyền ảnh/video, Cloudflare Worker điều phối chính và cung cấp dashboard. Có thể thêm witness/quorum để agent tiếp tục điều phối khi mất Cloudflare, rồi tùy chọn bật gateway/Funnel làm đường truy cập dự phòng.
 
 Chỉ **một máy active được ghi dữ liệu**. Witness đặt trên máy vật lý thứ ba, không chứa thư viện ảnh hoặc replica PostgreSQL. Đọc [cách hoạt động](cloudflare-ha/ARCHITECTURE.vi.md) để hiểu failover, đồng bộ ngược, tự trở về máy ưu tiên và xử lý sự cố Cloudflare.
 
 ## Kiến trúc
+
+Sơ đồ đầy đủ khi đã bật witness/Funnel; cài hai node cơ bản không yêu cầu các thành phần tùy chọn này.
 
 ```mermaid
 flowchart TD
@@ -26,7 +28,7 @@ flowchart TD
     Router --> Local[Gateway LAN/Tailscale của node active]
     Local --> A
     Local --> B
-    A <-->|Tailscale: PostgreSQL WAL và Syncthing| B
+    A <-->|LAN hoặc Tailscale: PostgreSQL WAL và Syncthing| B
 ```
 
 | Thành phần | Chức năng |
@@ -37,14 +39,14 @@ flowchart TD
 | Nginx gate | Chỉ mở truy cập khi token, epoch, lease và mode hợp lệ |
 | PostgreSQL `16/ha`, cổng `5433` | Streaming bất đồng bộ; standby chỉ đọc, promote khi được cấp quyền |
 | Syncthing | Truyền file ảnh/video, danh mục WAL và backup SQL theo chiều active → standby |
-| Tailscale | Kết nối riêng giữa hai LXC, kể cả khi khác mạng |
+| LAN / Tailscale | Kết nối dữ liệu trực tiếp trong LAN, hoặc tailnet tùy chọn khi cần |
 | etcd trên hai node và witness | Khóa chung/lease native; không lưu ảnh hoặc database Immich |
 | Witness gateway và Funnel chung | Một URL dự phòng theo active; chỉ định tuyến, không cấp quyền ghi |
 | Dịch vụ điều khiển Funnel trên witness | Nhận yêu cầu bật/tắt listener chung, báo xác nhận về dashboard |
 
-Lớp quorum ba thành viên triển khai theo checkpoint: [QUORUM.vi.md](cloudflare-ha/QUORUM.vi.md). Bước 3b bắt buộc xác nhận khóa chung; bước 3c bổ sung điều phối dự phòng khi mất kết nối Cloudflare và đối chiếu quyền khi Cloudflare hồi phục. Cloudflare vẫn điều phối chính. Gateway LAN/Tailscale (4a) và HTTPS Funnel từng node (4b) là đường vào có grant gate riêng; bật 3c chưa tự tạo đường truy cập thay thế domain Cloudflare.
+Witness/quorum giữ khóa chung và cho phép fallback khi mất kết nối Cloudflare; Cloudflare vẫn điều phối chính khi hoạt động. Gateway witness đọc owner từ quorum rồi proxy tới node có grant, không cấp quyền ghi. Funnel chung xuất bản gateway thành một URL HTTPS tự đi theo active. Hai Funnel riêng từng node là tùy chọn bổ sung.
 
-Gateway witness (4c) cung cấp đường vào chung, đọc owner từ quorum rồi proxy tới gateway node. Nó chỉ định tuyến, không cấp quyền ghi. Funnel chung trên witness (4d) bổ sung một URL HTTPS tự đi theo active; hai Funnel node vẫn giữ làm đường truy cập trực tiếp khi cần.
+Cài mới theo [WITNESS-SETUP.vi.md](cloudflare-ha/WITNESS-SETUP.vi.md). [QUORUM.vi.md](cloudflare-ha/QUORUM.vi.md) giữ chi tiết giao thức và runbook cũ, không phải chuỗi lệnh cần chạy lại sau init/join.
 
 `primary` và `backup` là **ID cố định**, không phải vai trò cố định. Cả hai máy đều có thể làm active. Lần cài đầu khởi tạo owner là `primary`; sau đó vai trò theo trạng thái đã lưu.
 
@@ -61,44 +63,40 @@ Gateway witness (4c) cung cấp đường vào chung, đọc owner từ quorum r
 
 ## Triển khai
 
-**Bắt đầu tại [hướng dẫn triển khai từ đầu](cloudflare-ha/DEPLOYMENT.vi.md)**. Tài liệu phân biệt lệnh chạy trên máy quản trị, Proxmox host và bên trong LXC.
+### Cài mới trực tiếp, không SSH
 
-Thứ tự tổng quát:
-
-1. Chuẩn bị hai LXC Immich cùng phiên bản, PostgreSQL 16 và media mount cùng đường dẫn.
-2. Cài Tailscale **bên trong hai LXC**; cấu hình Syncthing và hoàn tất đồng bộ file.
-3. Điền `project.json` / `.env`, triển khai Worker và tạo hai Tunnel tới Nginx gate.
-4. Cài agent quan sát, runtime v2 và enforcement; xác nhận dự phòng trước khi nâng cấp streaming.
-5. Stage/test/cutover PostgreSQL streaming; bật đồng bộ SQL backup, tắt lịch dump định kỳ nếu chọn mô hình hiện tại.
-6. Kiểm tra mount, version, source/standby, backup và quyền phục vụ; cuối cùng mới bật tự động.
-7. Chuẩn bị witness trên máy vật lý thứ ba; cài quorum isolated → shadow → grant bắt buộc → fallback.
-8. Gateway node → Funnel riêng → gateway witness → Funnel chung; thử app ở từng checkpoint, rồi cài giám sát/điều khiển Funnel.
-
-Không chạy lại bước cài mới trên hệ thống đang hoạt động. Dùng mục **Cập nhật** trong hướng dẫn. Installer không tự chuẩn bị ổ đĩa, cài Immich hay tạo DNS/Access/Tunnel.
-
-### Cấu hình máy quản trị
-
-Từ thư mục repo:
+Sau khi lấy cùng source/commit trên hai LXC:
 
 ```bash
-cd cloudflare-ha
-cp project.example.json project.json
-cp .env.example .env
-python -m venv .venv
+# Trên LXC A
+bash install.sh init
+
+# Trên LXC B
+bash install.sh join
 ```
 
-Kích hoạt venv theo hệ điều hành, rồi:
+A hỏi cấu hình Cloudflare và cấp mã join; B nhập mã rồi tự cài cục bộ. Chọn **LAN** nếu cùng mạng, **Tailscale** nếu cần; không có máy quản trị riêng hoặc SSH giữa hai node. Theo dõi cài đặt trên dashboard. Xem [INSTALL.vi.md](cloudflare-ha/INSTALL.vi.md).
 
-```bash
-python -m pip install -r requirements-ssh.txt
-```
+Luồng installer mới được kiểm thử mô phỏng, **chưa nghiệm thu end-to-end trên hai LXC cài mới**. Không chạy init/join trên HA đang hoạt động.
 
-PowerShell dùng `Copy-Item` thay `cp` nếu cần. Điền domain, IP, email, Cloudflare Access Team domain/AUD trong `project.json`; khóa Cloudflare và SSH trong `.env`. Thay giá trị mẫu bằng giá trị thật, không sửa cứng vào code.
+### Chọn phạm vi triển khai
+
+| Phạm vi | Thành phần | Khi Cloudflare không truy cập được |
+| --- | --- | --- |
+| Hai node cơ bản | Worker/dashboard + hai agent + PostgreSQL streaming + Syncthing | Không có bộ điều phối thay thế; gate đóng khi grant hết hạn |
+| Mở rộng dự phòng Cloudflare | Thêm quorum A/B/witness, fallback và gateway/Funnel | Agent có thể tiếp tục điều phối theo khóa quorum; dùng đường truy cập dự phòng đã cài |
+
+Bản live hiện dùng cả hai lớp. `init/join` chỉ cài **hai node cơ bản**. Muốn mở rộng, chủ động dùng `witness-init`/`witness-join`, rồi tùy chọn `funnel-enable`; xem [hướng dẫn witness/Funnel không SSH](cloudflare-ha/WITNESS-SETUP.vi.md). Không tự cài witness mặc định. Các bộ cài mới chưa nghiệm thu end-to-end trên LXC mới.
+
+Bắt đầu tại [DEPLOYMENT.vi.md](cloudflare-ha/DEPLOYMENT.vi.md). Các bước SSH cũ được giữ trong [runbook thủ công](cloudflare-ha/MANUAL-DEPLOYMENT.vi.md) để bảo trì; không phải yêu cầu của bộ cài mới. Không chạy `init/join` lên bản live.
 
 | Tài liệu | Nội dung |
 | --- | --- |
+| [INSTALL.vi.md](cloudflare-ha/INSTALL.vi.md) | Init/join cục bộ, không SSH; LAN/Tailscale tùy chọn |
 | [ARCHITECTURE.vi.md](cloudflare-ha/ARCHITECTURE.vi.md) | Quyền ghi, đường truy cập, failover/failback và các tình huống lỗi |
-| [DEPLOYMENT.vi.md](cloudflare-ha/DEPLOYMENT.vi.md) | Cài HA, Tailscale, Syncthing, Worker, Tunnel, Access và agent |
+| [DEPLOYMENT.vi.md](cloudflare-ha/DEPLOYMENT.vi.md) | Điểm bắt đầu: chọn phạm vi, điều kiện và thứ tự triển khai |
+| [CLOUDFLARE-SETUP.vi.md](cloudflare-ha/CLOUDFLARE-SETUP.vi.md) | Lấy Account/Zone ID, tạo API token, chuẩn bị domain và đăng nhập dashboard |
+| [WITNESS-SETUP.vi.md](cloudflare-ha/WITNESS-SETUP.vi.md) | Witness tùy chọn qua HTTPS, LAN/Tailscale, gateway và Funnel không SSH |
 | [CONFIG.vi.md](cloudflare-ha/CONFIG.vi.md) | Domain/IP, SSH jump host, thông tin riêng và đổi cấu hình |
 | [STREAMING.vi.md](cloudflare-ha/STREAMING.vi.md) | Stage, cutover, WAL, fencing và bàn giao nhanh |
 | [DASHBOARD.vi.md](cloudflare-ha/DASHBOARD.vi.md) | Vận hành, backup, bảo trì, kiểm tra và log |

@@ -860,7 +860,7 @@ WHERE "deletedAt" IS NULL AND visibility IN ('timeline','archive');"""
             try:
                 value['postgresStreaming'] = self.streaming.state()
             except Exception:
-                value['postgresStreaming'] = {'mode': 'streaming', 'handoverVersion': 2, 'fastHandoverVersion': 1, 'available': False}
+                value['postgresStreaming'] = {'mode': 'streaming', 'handoverVersion': 2, 'fastHandoverVersion': 1, 'available': False,'networkMode':self.streaming.config.get('network_mode','tailscale')}
         value.update(self.resources())
         value["builtinBackups"] = builtin_backups(MEDIA / "backups")
         value["mediaMounted"] = os.path.ismount(MEDIA)

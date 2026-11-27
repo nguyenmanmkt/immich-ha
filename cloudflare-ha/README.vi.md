@@ -1,12 +1,15 @@
 # Immich HA — Worker và agent LXC
 
-Source chính của [Immich HA](../README.md). Cloudflare điều phối chính; PostgreSQL streaming/Syncthing truyền dữ liệu giữa hai LXC. Quorum ba thành viên bắt buộc xác nhận quyền và hỗ trợ fallback; gateway/Funnel witness cung cấp URL dự phòng chung. Owner có thể là một trong hai Immich node.
+Source chính của [Immich HA](../README.md). Cloudflare điều phối chính; PostgreSQL streaming/Syncthing truyền dữ liệu giữa hai LXC. Bản live đã bật quorum ba thành viên để xác nhận quyền và hỗ trợ fallback; gateway/Funnel witness cung cấp URL dự phòng chung. Cài mới dùng init/join hai node, rồi chủ động thêm witness qua HTTPS nếu cần. Owner có thể là một trong hai Immich node.
 
 ## Chọn đúng luồng
 
 | Việc cần làm | Tài liệu / công cụ |
 | --- | --- |
-| Triển khai mới | [DEPLOYMENT.vi.md](DEPLOYMENT.vi.md), làm theo thứ tự từ đầu |
+| Cài mới trực tiếp trên LXC, không SSH | [INSTALL.vi.md](INSTALL.vi.md): `bash install.sh init` tại A, `join` tại B, chọn LAN/Tailscale; installer mới chưa nghiệm thu end-to-end |
+| Chọn phạm vi cài đặt | [DEPLOYMENT.vi.md](DEPLOYMENT.vi.md): hai node trước, witness tùy chọn |
+| Ghép witness và bật Funnel không SSH | [WITNESS-SETUP.vi.md](WITNESS-SETUP.vi.md); LAN/Tailscale, bộ cài mới chưa nghiệm thu E2E |
+| Bảo trì theo luồng thủ công cũ | [MANUAL-DEPLOYMENT.vi.md](MANUAL-DEPLOYMENT.vi.md); không dùng làm quick start |
 | Hiểu kiến trúc và tình huống lỗi | [ARCHITECTURE.vi.md](ARCHITECTURE.vi.md) |
 | Quorum, fallback và gateway/Funnel | [QUORUM.vi.md](QUORUM.vi.md) |
 | Domain, IP, Access, SSH | [CONFIG.vi.md](CONFIG.vi.md) |
@@ -33,6 +36,10 @@ quorum_stage.py       PKI/mTLS và cấu hình thành viên etcd
 local_gateway.py      Kiểm tra/render gateway node
 witness_gateway_setup.py  Cài selector và Nginx gateway witness
 funnel_setup.py       Kiểm tra Serve/Funnel, giữ route không liên quan
+bootstrap_cloudflare.py  Tạo tài nguyên mới qua API, không chiếm tài nguyên đã có
+node/cluster_service.py  Client bootstrap chủ động kết nối HTTPS, không SSH
+node/cluster_bootstrap.py  Danh mục tác vụ cài cục bộ cố định
+src/enrollment.mjs    Join có hạn, ghép một thiết bị và tuần tự hóa cài hai node
 tests/                Kiểm thử Python/JavaScript, không cần production
 docs/reference/       Mẫu thiết kế, không phục vụ qua Worker
 docs/research/        Khảo sát chưa triển khai

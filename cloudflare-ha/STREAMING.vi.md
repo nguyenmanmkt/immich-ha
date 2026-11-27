@@ -1,5 +1,7 @@
 # PostgreSQL streaming replication
 
+**LAN/Tailscale:** installer [init/join](INSTALL.vi.md) hỗ trợ `network_mode: lan` với IP RFC1918, hoặc `tailscale` với IP tailnet. Khi thiếu trường này, cấu hình cũ giữ mặc định Tailscale. LAN chờ IP trên interface cục bộ bất kỳ, không phụ thuộc `tailscaled`/`tailscale0`. Các CLI migration thủ công bên dưới vẫn lấy IP Tailscale như trước. Không sửa tay chế độ/địa chỉ để chuyển một hệ thống đang chạy; cần kế hoạch đổi bind, peer, passfile và HBA đồng bộ.
+
 Chế độ tùy chọn này thay việc nạp dump theo giờ bằng PostgreSQL physical streaming replication. Ảnh/video vẫn đồng bộ bằng Syncthing. Backup SQL gốc Immich giữ vai trò khôi phục lịch sử; replication không thay thế backup. Lịch dump HA thuộc chế độ legacy và có thể tắt sau khi đã kiểm tra streaming/SQL backup.
 
 Có thể tắt riêng dump HA định kỳ bằng marker `/etc/immich-ha/disable-scheduled-dump` và `systemctl disable --now immich-ha-dump.timer` trên cả hai máy. Installer và công cụ cutover tôn trọng marker này. Backup SQL gốc Immich giữ lịch riêng. Luồng bàn giao WAL mới không tạo hoặc restore dump; các file dump cũ không tự bị xóa khi tắt lịch, và lịch prune đi kèm dump định kỳ cũng ngừng chạy.

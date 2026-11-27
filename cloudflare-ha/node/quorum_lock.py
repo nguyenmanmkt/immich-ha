@@ -20,6 +20,14 @@ import uuid
 CONFIG=Path('/etc/immich-ha/quorum-shadow.json')
 
 
+def private_address(value, mode='tailscale'):
+    address=ipaddress.IPv4Address(value)
+    networks=('100.64.0.0/10',) if mode=='tailscale' else ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16') if mode=='lan' else ()
+    if str(address)!=value or not any(address in ipaddress.ip_network(n) for n in networks):
+        raise ValueError('Expected an address in the selected private network')
+    return address
+
+
 def validate_config(config):
     if config.get('version')!=1 or config.get('mode')!='shadow':raise ValueError('Only shadow mode is implemented')
     if str(uuid.UUID(config['clusterId']))!=config['clusterId']:raise ValueError('Invalid quorum identity')
@@ -30,7 +38,7 @@ def validate_config(config):
         url=urllib.parse.urlsplit(endpoint)
         if url.scheme!='https' or url.port!=2379 or url.username or url.password or url.path not in ('','/') or url.query or url.fragment:
             raise ValueError('Invalid etcd endpoint')
-        if ipaddress.ip_address(url.hostname) not in ipaddress.ip_network('100.64.0.0/10'):raise ValueError('Expected Tailscale endpoints')
+        private_address(url.hostname,config.get('networkMode','tailscale'))
     for name in ('ca','cert','key'):
         if not PurePosixPath(config[name]).is_absolute():raise ValueError('Absolute TLS paths required')
     return config

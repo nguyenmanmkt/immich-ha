@@ -1,5 +1,15 @@
 # Cấu hình triển khai
 
+Với [init/join không SSH](INSTALL.vi.md), wizard tạo cấu hình cục bộ; không cần điền các biến SSH. `network_mode: lan` dùng IP nội bộ, `tailscale` dùng IP tailnet; thiếu trường giữ mặc định Tailscale cho deployment cũ. Phần CLI/SSH dưới đây dành cho luồng thủ công/bảo trì.
+
+`install.sh` dùng `requirements-local.txt` cho luồng cài cục bộ. `requirements-ssh.txt` chỉ dành cho công cụ bảo trì SSH và bộ kiểm thử đầy đủ; không phải điều kiện ghép A/B/witness.
+
+Witness tùy chọn dùng [witness-init/witness-join](WITNESS-SETUP.vi.md). Topology/chứng thư bootstrap riêng giữ tại `.install/witness.json` và `.install/witness-pki/` trên A; không thay file topology/key của bản live cũ. Quorum authority và witness router có trường `networkMode: lan|tailscale`, thiếu trường vẫn dùng Tailscale. LAN chỉ nhận IPv4 RFC1918, mTLS vẫn bắt buộc.
+
+Client `immich-ha-bootstrap.service` giữ credential cục bộ `.install/node.json`, chờ tác vụ qua HTTPS sau khi cài hai node xong. Witness dùng credential riêng, không nhận Cloudflare API token/admin token. Mã join hết hạn sau 30 phút và ràng buộc một claim/địa chỉ. Cài witness tạm tắt automation, giữ owner/epoch, chỉ khôi phục khi grant/WAL/gateway đã xác nhận; lỗi giữ checkpoint và không tự restage.
+
+`funnel-enable` đọc gateway marker/hash cục bộ, bật riêng HTTPS 443 và báo URL về Durable Object. Metadata Funnel của luồng mới lưu trong state mở rộng, không cần sửa `project.json` hoặc redeploy Worker sau mỗi lần bật/tắt. Witness nhận desired revision qua credential bootstrap riêng; credential này không cấp quyền promote. Cấu hình Funnel cũ bằng `.env`/`project.json` và `FUNNEL_CONTROL_TOKEN` vẫn được giữ để tương thích. `networkMode: lan` không yêu cầu Tailscale trên A/B; bật Funnel chung chỉ cần Tailscale trên witness.
+
 Tạo `project.json` từ `project.example.json`; tạo `.env` từ `.env.example`. Không commit hai file riêng này.
 
 | Trường project.json | Ý nghĩa |

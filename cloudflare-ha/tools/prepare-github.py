@@ -28,7 +28,7 @@ def git_files():
 
 def private_path(name):
     p = Path(name)
-    if any(x in p.parts for x in ("generated", ".venv", "node_modules", ".wrangler", "__pycache__")):
+    if any(x in p.parts for x in ("generated", ".install", ".venv", "node_modules", ".wrangler", "__pycache__")):
         return True
     if p.name.startswith(".env"):
         return not (p.name.endswith(".example"))

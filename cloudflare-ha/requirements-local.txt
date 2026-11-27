@@ -1,0 +1,2 @@
+# init/join and optional witness/Funnel: no SSH transport dependency.
+cryptography==50.0.2

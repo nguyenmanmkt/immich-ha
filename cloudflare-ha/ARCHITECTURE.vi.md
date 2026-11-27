@@ -1,5 +1,7 @@
 # Cách Immich HA hoạt động
 
+Cài mới chia hai phạm vi: `init/join` tạo HA hai node với Cloudflare; `witness-init`/`witness-join` bổ sung quorum/fallback/gateway nếu người vận hành chọn. Mỗi máy nhận tác vụ cố định qua HTTPS và tự cài cục bộ, không dùng SSH. Quorum/gateway dùng LAN hoặc Tailscale theo mạng của A/B; Funnel là bước tùy chọn riêng, cần Tailscale trên máy xuất bản URL. [WITNESS-SETUP.vi.md](WITNESS-SETUP.vi.md) là luồng mới chưa nghiệm thu E2E; bản live cũ giữ nguyên các định danh và cách triển khai.
+
 ## Ba lớp độc lập
 
 | Lớp | Thành phần | Quyết định |
@@ -15,7 +17,7 @@
 1. Hai agent gửi heartbeat và nhận lệnh/grant từ Worker. Durable Object lưu owner, epoch, lease, jobs và cài đặt tự động.
 2. Sau khi bật enforcement quorum, agent phải xác nhận khóa chung qua etcd mTLS trước khi promote, khởi động app hoặc mở origin. etcd giữ generation bền vững và active key có TTL native.
 3. Chỉ active chạy Immich đầy đủ worker và PostgreSQL writable. Standby PostgreSQL ở recovery, Immich dừng; agent theo dõi mount, WAL và file để báo sẵn sàng.
-4. PostgreSQL truyền WAL qua Tailscale. Syncthing truyền media theo chiều active Send Only → standby Receive Only. Folder `immich-database` truyền manifest bàn giao và dữ liệu legacy còn giữ, **không phải PGDATA đang chạy**.
+4. PostgreSQL truyền WAL qua LAN hoặc Tailscale đã cấu hình. Syncthing truyền media theo chiều active Send Only → standby Receive Only. Folder `immich-database` truyền manifest bàn giao và dữ liệu legacy còn giữ, **không phải PGDATA đang chạy**.
 5. Domain chính đến Worker → Tunnel → origin gate của active. Gate yêu cầu đúng token, epoch, grant còn hạn và mode hợp lệ. App cổng 2283 chỉ nghe loopback.
 
 Số ảnh/video trên dashboard đọc từ database từng máy và làm mới khoảng một phút. “Đã đồng bộ” của Syncthing không xác nhận trạng thái WAL; “Đang nhận WAL” cũng không xác nhận mọi file đã tới.
