@@ -173,79 +173,103 @@ Trong Cloudflare dashboard, gắn `publicHost` và `adminHost` vào Worker bằn
 
 Tạo hai Tunnel độc lập và cài `cloudflared` như hướng dẫn Cloudflare. Nếu dùng `127.0.0.1:8080`, connector phải chạy trong chính LXC có Nginx đó. Tạo Published Application cho từng origin như bảng. Không công khai `8384`, `9081` hoặc `5433` qua Tunnel.
 
-## 6. Bootstrap agent ở chế độ quan sát
+## 6. Cài node Immich HA trên hai LXC
 
-Chỉ làm trên LXC **chưa có** `/etc/immich-ha/config.json`. Copy vào một thư mục riêng của đúng LXC:
+**Điều kiện:** đã hoàn thành bước 1–5: hai Immich có cùng media root, ảnh đã đồng bộ, Worker/Tunnel/Access đã cấu hình, SSH đã xác minh host key và có `generated/primary/config.json` cùng `generated/backup/config.json`.
 
-```text
-node/install-node.sh
-node/agent.py
-node/standby-run
-node/immich-ha.nginx.conf
-generated/<node>/config.json   → đặt tên config.json cạnh install-node.sh
+Chỉ dùng mục 6–7 cho **cài mới HA**: cả hai LXC chưa có `/etc/immich-ha/config.json`. Nếu đã có, dùng mục 12, không ghi đè config.
+
+| Máy | ID dùng trong lệnh | Config phải copy |
+| --- | --- | --- |
+| LXC A đang chứa dữ liệu nguồn | `primary` | `generated/primary/config.json` |
+| LXC B sẽ nhận dữ liệu dự phòng | `backup` | `generated/backup/config.json` |
+
+Các lệnh dưới chạy **trên máy quản trị, trong thư mục `cloudflare-ha/`, đã kích hoạt venv**. Lệnh `ssh` tự chạy phần cài đặt bên trong LXC; không mở shell Proxmox host để chạy installer.
+
+### 6.1. Khai báo địa chỉ hai LXC
+
+Ví dụ PowerShell; thay hai IP mẫu bằng địa chỉ SSH thật, khớp `SSH_PRIMARY_HOST` / `SSH_BACKUP_HOST` trong `.env`:
+
+```powershell
+$NodeA = 'root@192.0.2.10'
+$NodeB = 'root@192.0.2.20'
 ```
 
-Config phải đúng node/IP và `enforce: false`. Không dùng nhầm config A cho B. Installer backup cũ chỉ được nối nếu đã có state legacy; LXC backup mới không cần bộ installer riêng theo IP cá nhân.
+Nếu máy quản trị dùng Bash, khai báo `NodeA='root@192.0.2.10'` và `NodeB='root@192.0.2.20'`; các lệnh SSH/SCP/Python sau dùng giống nhau. SCP/SSH dùng cấu hình OpenSSH của máy quản trị, không tự đọc mật khẩu/key trong `.env`; cấu hình `~/.ssh/config` nếu cần key/port/jump host riêng.
 
-Trong **LXC A**:
+### 6.2. Copy và cài trên LXC A
 
-```bash
-bash install-node.sh primary
+```powershell
+ssh $NodeA 'install -d -m 700 /root/immich-ha-install'
+scp node/install-node.sh node/agent.py node/standby-run node/immich-ha.nginx.conf node/enable-enforcement.sh "${NodeA}:/root/immich-ha-install/"
+scp generated/primary/config.json "${NodeA}:/root/immich-ha-install/config.json"
+ssh $NodeA 'bash /root/immich-ha-install/install-node.sh primary'
 ```
 
-Trong **LXC B**:
+Chờ xuất hiện **`INSTALLED primary IN OBSERVE MODE`** rồi mới tiếp tục.
 
-```bash
-bash install-node.sh backup
+### 6.3. Copy và cài trên LXC B
+
+```powershell
+ssh $NodeB 'install -d -m 700 /root/immich-ha-install'
+scp node/install-node.sh node/agent.py node/standby-run node/immich-ha.nginx.conf node/enable-enforcement.sh "${NodeB}:/root/immich-ha-install/"
+scp generated/backup/config.json "${NodeB}:/root/immich-ha-install/config.json"
+ssh $NodeB 'bash /root/immich-ha-install/install-node.sh backup'
 ```
 
-Kiểm tra cả hai:
+Chờ **`INSTALLED backup IN OBSERVE MODE`**. Hai config khác khóa/ID; không copy config A cho B.
 
-```bash
-nginx -t
-systemctl is-active nginx immich-ha-agent
-```
+### 6.4. Kiểm tra đã cài
 
-Trên **máy quản trị**:
+Vẫn trên máy quản trị:
 
-```bash
-python admin.py status --compact
+```powershell
+ssh $NodeA 'systemctl is-active nginx immich-ha-agent'
+ssh $NodeB 'systemctl is-active nginx immich-ha-agent'
 python admin.py probe
+python admin.py status --compact
 python check-public.py
 ```
 
-**Đạt:** heartbeat hai node xuất hiện, nguồn `primary` phục vụ; domain công khai trả ping và header HA của `primary`; auto còn OFF. Lỗi 403/Access ở origin cần sửa trước, không bật auto để chữa lỗi.
+**Đạt:** Nginx/agent cả hai máy `active`, status có heartbeat hai node, domain chính ping được qua Worker về `primary`, auto vẫn OFF. Giai đoạn này agent chỉ quan sát; chưa yêu cầu `standbyEligible: true` và chưa có quyền tự chuyển máy. Lỗi IP, mount hoặc 403/Access phải xử lý trước bước 7.
 
-## 7. Runtime v2, enforcement và bootstrap dữ liệu
+## 7. Bật runtime điều khiển và tạo dự phòng lần đầu
 
-Trên **máy quản trị**:
+Vẫn dùng terminal máy quản trị và hai biến `$NodeA`, `$NodeB` ở bước 6.
 
-```bash
+### 7.1. Cài runtime v2 tự động qua SSH
+
+```powershell
 python tools/package-nodes.py
 python ssh_nodes.py primary --upgrade
 python ssh_nodes.py backup --upgrade
 ```
 
-Hai ZIP riêng chứa khóa, không được chia sẻ. Nếu cài thủ công, giải nén đúng ZIP vào đúng LXC và chạy `bash upgrade-v2.sh`. Script yêu cầu auto OFF, không có job/pending, mount và IP/khóa đúng. Nó chuyển sang `immich-ha-app.service`, tắt service Immich gốc và giữ file quay lui.
+Lệnh đầu tạo hai ZIP riêng trong `generated/`; hai lệnh sau tự upload, giải nén thành từng file và chạy installer đúng LXC bằng thông tin SSH trong `.env`. Không cần tự copy ZIP. Chờ từng lệnh thành công; runtime báo **`UPGRADE V2 INSTALLED`**. Nó thay service Immich gốc bằng `immich-ha-app.service`, có restart app; auto phải OFF và không có job/pending.
 
-Copy `node/enable-enforcement.sh` vào **mỗi LXC**, chạy sau khi domain đi qua Worker và hai gates:
+### 7.2. Bật kiểm tra quyền phục vụ trên cả hai máy
 
-```bash
-bash enable-enforcement.sh
+File cần dùng đã được copy ở bước 6, không phải copy lại:
+
+```powershell
+ssh $NodeA 'bash /root/immich-ha-install/enable-enforcement.sh'
+ssh $NodeB 'bash /root/immich-ha-install/enable-enforcement.sh'
+python admin.py probe
+python admin.py status --compact
 ```
 
-Script hỗ trợ runtime v2 và bind app loopback. Agent phải báo enforcement hợp lệ; không còn cổng 2283 lắng nghe public/LAN. Chưa bật auto.
+Chờ thông báo **`Enforcement enabled for primary`** / **`backup`**. Script chỉ tiếp tục khi domain chính đã đi qua Worker về `primary`; app chuyển sang chỉ nghe loopback. Đây là enforcement origin của hai node, chưa phải lớp quorum ở mục 11. Chưa bật auto.
 
-Chuẩn bị đích lần đầu bằng runtime v2 từ **máy quản trị**:
+### 7.3. Tạo bản dự phòng từ nguồn A
 
-```bash
+```powershell
 python admin.py prepare --target backup
 python admin.py status --compact
 ```
 
-Chờ job hoàn tất. Bước bootstrap này **còn dùng dump một lần** vì streaming chưa được cài. Nó xác nhận đường dẫn ảnh, thư viện và khả năng restore trước khi chuyển sang streaming. Không dùng các script standby cá nhân cũ. Nếu GUI API sẵn sàng nhưng ảnh thiếu hoặc đường dẫn sai, xử lý ở bước này.
+Chờ job **`succeeded`**, kiểm tra `ready: true`, `standbyEligible: true`, heartbeat mới và Syncthing không pause/lỗi. Nếu job còn chạy, dùng dashboard hoặc chạy lại lệnh status; không chạy thêm job prepare trùng.
 
-**Đạt:** `ready: true`, `standbyEligible: true`, hai heartbeat mới, phiên bản phù hợp, job succeeded; cả hai Syncthing folder không pause/lỗi. Hai máy vẫn auto OFF.
+**Hoàn tất cài node HA trên hai máy.** Tiếp tục bước 8 để chuyển PostgreSQL sang streaming. Lần prepare này dùng dump để bootstrap; sau cutover streaming, các lần bàn giao dùng WAL/manifest. Không dùng script standby cá nhân cũ hoặc bật auto trước khi hoàn thành kiểm tra streaming.
 
 ## 8. PostgreSQL streaming và bàn giao WAL
 
