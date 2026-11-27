@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initialState, heartbeat, recordProbe, admin, route, advance, LIMITS } from "../src/controller.mjs";
+import { initialState, heartbeat, recordProbe, admin, route, advance, LIMITS, status } from "../src/controller.mjs";
 
 const sessions = { primary: "primary_session_123456", backup: "backup_session_123456" };
 const payload = (node, extra = {}) => ({ session: sessions[node], localHealthy: true,
@@ -20,12 +20,32 @@ test("defaults to manual and no public route before readiness", () => {
   assert.equal(s.auto, false);
   assert.equal(route(s, 1), null);
 });
+
+test('quorum shadow observations are diagnostic and cannot change the serving authority',()=>{
+  const s=setup();
+  const shadow={mode:'shadow',state:'unavailable',owner:'backup',epoch:999};
+  const grant=heartbeat(s,'primary',payload('primary',{protocolVersion:2,metrics:{quorumShadow:shadow,privateTLSKey:'never-forward'}}),100_002);
+  assert.equal(grant.role,'active');assert.equal(grant.epoch,1);assert.equal(s.owner,'primary');
+  assert.deepEqual(route(s,100_002),{node:'primary',epoch:1});
+  assert.deepEqual(s.heartbeats.primary.metrics.quorumShadow,shadow);
+  assert.equal(s.heartbeats.primary.metrics.privateTLSKey,undefined);
+  assert.equal(status(s,100_002).quorumShadowProtocol,1);
+});
 test("diagnostic probe objects preserve failures rather than treating objects as true", () => {
   const s = setup();
   recordProbe(s, "primary", { ok: false, status: 403 }, 100_002);
   assert.equal(s.probes.primary.ok, false);
   assert.equal(s.probes.primary.status, 403);
   assert.equal(route(s, 100_002), null);
+});
+
+test('shared admission telemetry is exposed without becoming an owner override',()=>{
+  const s=setup();
+  const quorumAuthority={protocol:1,mode:'enforced',state:'admitted',fallbackEnabled:false};
+  heartbeat(s,'primary',payload('primary',{protocolVersion:2,metrics:{quorumAuthority,clientKey:'private'}}),100_002);
+  assert.deepEqual(s.heartbeats.primary.metrics.quorumAuthority,quorumAuthority);
+  assert.equal(s.heartbeats.primary.metrics.clientKey,undefined);
+  assert.equal(s.owner,'primary');assert.equal(status(s,100_002).quorumAuthorityProtocol,1);
 });
 test("routes primary only after matching session acknowledges its grant", () => {
   const s = setup();

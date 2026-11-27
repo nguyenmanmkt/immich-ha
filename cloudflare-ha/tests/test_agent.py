@@ -18,6 +18,109 @@ spec.loader.exec_module(module)
 
 
 class AgentTests(unittest.TestCase):
+    def test_local_gateway_requires_live_active_enforced_quorum_without_client_epoch(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as root:
+            agent=self.make_agent(root)
+            agent.quorum_authority=Mock();agent.quorum_authority.valid.return_value=True
+            agent.runtime=Mock();agent.runtime.mode.return_value='active'
+            agent.view=dict(role='active',ready=True,epoch=14,deadline=1000)
+            handler=object.__new__(module.handler_for(agent));handler.path='/authorize-local'
+            handler.headers={'X-Immich-HA-Token':agent.config['origin_token']}
+            handler.send_response=Mock();handler.send_header=Mock();handler.end_headers=Mock()
+            with patch.object(module.time,'monotonic',return_value=100),patch.object(module.os.path,'ismount',return_value=True):
+                handler.do_GET();handler.send_response.assert_called_with(200)
+                agent.view['role']='standby';handler.do_GET();handler.send_response.assert_called_with(403)
+                agent.view['role']='active';agent.quorum_authority.valid.return_value=False
+                handler.do_GET();handler.send_response.assert_called_with(403)
+                agent.quorum_authority.valid.return_value=True;agent.runtime.mode.return_value='frozen'
+                handler.do_GET();handler.send_response.assert_called_with(403)
+                agent.runtime.mode.return_value='active';agent.config['enforce']=False
+                handler.do_GET();handler.send_response.assert_called_with(403)
+                agent.config['enforce']=True;agent.quorum_authority=None
+                handler.do_GET();handler.send_response.assert_called_with(403)
+
+    def test_heartbeat_fault_is_root_only_boot_bound_and_expires_within_180_seconds(self):
+        import json,stat,uuid
+        value=dict(version=1,testId=str(uuid.uuid4()),bootId='boot',startedBoot=100,untilBoot=280)
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'fault.json';path.write_text(json.dumps(value))
+            info=types.SimpleNamespace(st_mode=stat.S_IFREG|0o600,st_uid=0,st_size=200)
+            with patch.object(Path,'lstat',return_value=info):
+                self.assertTrue(module.heartbeat_test_blocked(path,now=101,boot_id='boot'))
+                self.assertFalse(module.heartbeat_test_blocked(path,now=280,boot_id='boot'))
+                self.assertFalse(module.heartbeat_test_blocked(path,now=99,boot_id='boot'))
+                self.assertFalse(module.heartbeat_test_blocked(path,now=101,boot_id='old-boot'))
+                for change in ({'untilBoot':281},{'testId':'bad'},{'startedBoot':True}):
+                    path.write_text(json.dumps({**value,**change}))
+                    self.assertFalse(module.heartbeat_test_blocked(path,now=101,boot_id='boot'))
+                path.write_text(json.dumps(value));info.st_uid=1000
+                self.assertFalse(module.heartbeat_test_blocked(path,now=101,boot_id='boot'))
+                info.st_uid=0;info.st_mode=stat.S_IFREG|0o644
+                self.assertFalse(module.heartbeat_test_blocked(path,now=101,boot_id='boot'))
+                info.st_mode=stat.S_IFLNK|0o600
+                self.assertFalse(module.heartbeat_test_blocked(path,now=101,boot_id='boot'))
+
+    def test_watchdog_retries_failed_fencing_even_after_origin_deadline_is_zeroed(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as root:
+            agent=self.make_agent(root)
+            agent.quorum_authority=Mock();agent.quorum_authority.state='admitted'
+            agent.quorum_authority.valid.return_value=False
+            agent.view=dict(role='active',owner='primary',epoch=14,deadline=0,ready=False)
+            agent.fence=Mock(side_effect=[RuntimeError('systemd temporarily unavailable'),None])
+            with patch.object(module.time,'sleep',side_effect=[None,StopIteration]),patch.object(module.logging,'error'):
+                with self.assertRaises(StopIteration):agent.watch_grant()
+            self.assertEqual(agent.fence.call_count,2)
+
+    def test_cloudflare_grant_cannot_activate_when_quorum_denies_it(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as root:
+            agent=self.make_agent(root)
+            agent.quorum_authority=Mock()
+            agent.quorum_authority.admit.side_effect=RuntimeError('lease-held')
+            agent.activate=Mock();agent.fence=Mock()
+            response={'role':'active','owner':'primary','epoch':5,'leaseMs':240000}
+            with patch.object(module,'isolated',return_value=True),patch.object(module,'local_healthy',return_value=True),patch.object(module,'request_json',return_value=response):
+                with self.assertRaisesRegex(RuntimeError,'lease-held'):agent.tick()
+            agent.activate.assert_not_called()
+            self.assertFalse(agent.view['ready'])
+
+    def test_quorum_expiry_fences_postgres_even_if_cloudflare_still_names_this_owner(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as root:
+            agent=self.make_agent(root)
+            agent.runtime=Mock();agent.quorum_authority=Mock()
+            agent.quorum_authority.valid.return_value=False
+            agent.view=dict(role='active',owner='primary',epoch=14,deadline=1000,ready=True)
+            agent.fence()
+            agent.runtime.fence.assert_called_once_with(14,None)
+            self.assertEqual(agent.view['deadline'],0)
+
+    def test_origin_rejects_expired_quorum_while_cloudflare_lease_is_live(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as root:
+            agent=self.make_agent(root)
+            agent.quorum_authority=Mock();agent.quorum_authority.valid.return_value=False
+            agent.view=dict(role='active',owner='primary',ready=True,deadline=1000,epoch=14)
+            handler=object.__new__(module.handler_for(agent));handler.path='/authorize'
+            handler.headers={'X-Immich-HA-Token':agent.config['origin_token'],'X-Immich-HA-Epoch':'14'}
+            handler.send_response=Mock();handler.send_header=Mock();handler.end_headers=Mock()
+            with patch.object(module.time,'monotonic',return_value=100):handler.do_GET()
+            handler.send_response.assert_called_once_with(403)
+
+    def test_shadow_failure_cannot_fence_or_prevent_cloudflare_activation(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as root:
+            agent=self.make_agent(root)
+            agent.quorum_shadow=Mock();agent.quorum_shadow.submit.side_effect=RuntimeError('quorum offline')
+            agent.activate=Mock();agent.fence=Mock()
+            response={'role':'active','owner':'primary','epoch':1,'leaseMs':240000}
+            with patch.object(module,'isolated',return_value=True),patch.object(module,'local_healthy',return_value=True),patch.object(module,'request_json',return_value=response):
+                agent.tick()
+            agent.activate.assert_called_once();agent.fence.assert_not_called()
+            self.assertTrue(agent.view['ready'])
+
     def test_origin_denies_frozen_runtime_even_with_unexpired_active_grant(self):
         from unittest.mock import Mock
         agent=Mock();agent.config={'origin_token':'private-origin-token'}

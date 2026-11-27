@@ -8,6 +8,10 @@ Tạo `project.json` từ `project.example.json`; tạo `.env` từ `.env.exampl
 | publicHost / adminHost | Domain Immich / dashboard HA |
 | origins.primary / origins.backup | URL HTTPS của hai Tunnel tới gate cổng 8080 |
 | nodes.*.label / host / ip / containerId | Metadata nhận diện hai máy |
+| funnelUrl | URL HTTPS `.ts.net` chung; để trống để ẩn monitor |
+| witnessTailscaleIp | IP Tailscale IPv4 witness, hiển thị trong ⚙ Funnel |
+| nodes.*.funnelUrl | URL Funnel riêng của từng node, chỉ phục vụ khi node active |
+| nodes.*.tailscaleIp | IP Tailscale IPv4 node, metadata cho dashboard |
 | access.teamDomain | Team domain dạng example.cloudflareaccess.com |
 | access.audience | Application AUD của Access bảo vệ dashboard |
 | access.emails | Email quản trị được cho phép |
@@ -20,6 +24,8 @@ primary/backup là định danh cố định, không phải phân vai chính/ph�
 - ORIGIN_ACCESS_CLIENT_ID / ORIGIN_ACCESS_CLIENT_SECRET dùng Service Auth phía origin nếu cần.
 - SSH_PRIMARY_* / SSH_BACKUP_* dùng công cụ SSH, không phải mật khẩu Immich.
 - SSH_JUMP_* là jump host dự phòng khi máy quản trị không tới thẳng LXC. Bỏ trống nếu không cần; thông tin đăng nhập jump host tách riêng với từng node. Xác minh host key của cả jump host và LXC trong `known_hosts`. Alias cấu hình host Asus từ deployment cũ vẫn được đọc để tương thích, nhưng source công khai không cần helper SSH cá nhân.
+- SSH_COORDINATOR_* là SSH witness trên máy vật lý thứ ba. Các tool quorum có thể vào peer/witness qua node primary; dùng IP peer thật trong streaming, giữ host-key pin.
+- SSH_KEY_PATH / SSH_KEY_PASSPHRASE là key chung được chỉ định rõ cho transport quorum khi chưa có key riêng. Nó không tự thay mật khẩu/khóa từng node trong mọi công cụ khác.
 
 Giá trị .env được đọc literal, không nội suy shell. Không gửi file này vào chat hoặc issue.
 
@@ -34,6 +40,16 @@ Dashboard dùng Access đăng nhập email. Hai origin có thể dùng applicati
 5. Nếu đổi publicHost, cập nhật URL trên app Immich.
 
 Không đổi storage identifier trong src/worker.mjs trên hệ thống đang chạy: việc đó sẽ mở trạng thái coordinator khác. Không đổi workerName chỉ để đổi domain.
+
+### Địa chỉ Funnel và quorum
+
+URL Funnel chỉ nhận HTTPS hostname `.ts.net`, không có path/query/token; port được hỗ trợ là 443/8443/10000. IP metadata Tailscale dùng IPv4 trong `100.64.0.0/10`. Các giá trị này để hiển thị, không tự cấu hình mạng, đổi replication peer hoặc sửa ACL.
+
+`tools/install-funnel-control.py --deploy` lấy địa chỉ đã xác nhận từ `generated/quorum-topology.json`, bổ sung metadata vào project, thêm token chuyên dụng, cập nhật Worker và cài timer witness. Có backup riêng trước khi sửa file. Tool chỉ tiếp tục khi HA khỏe/idle, Funnel chung đang bật và cấu hình witness cũ khớp; không dùng nó để đổi hostname/port bất kỳ bằng cách ghi đè.
+
+Token `FUNNEL_CONTROL_TOKEN` được sinh và giữ trong bộ secret riêng, không điền vào project hoặc gửi cho browser. Nó chỉ dùng endpoint báo trạng thái/nhận yêu cầu Funnel; không dùng được như admin/agent token để cấp quyền Immich. Witness đọc cấu hình root-only `/etc/immich-ha/witness-funnel-control.json`. Các token cũ, cluster ID và khóa CA không bị xoay khi cài thêm tính năng.
+
+Topology quorum là trạng thái triển khai riêng, chứa cluster ID/member IP và cờ checkpoint. Đổi LAN IP không tự đổi IP tailnet. Nếu đổi IP tailnet của thành viên, phải có kế hoạch sửa etcd peer/client URLs, SAN chứng thư, replication và gateway target; không xóa topology rồi chạy stage để “cập nhật IP”.
 
 ## Syncthing qua Tailscale
 

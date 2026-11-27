@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 from project_config import load_project, node_properties
 
 project = load_project()
-files = ("agent.py", "ha_runtime.py", "pg_stream.py", "immich_upgrade.py", "build-immich-release.sh", "maintenance-v2.py", "app-run-v2", "upgrade-v2.sh")
+files = ("agent.py", "ha_runtime.py", "pg_stream.py", "quorum_lock.py", "quorum_authority.py", "immich_upgrade.py", "build-immich-release.sh", "maintenance-v2.py", "app-run-v2", "upgrade-v2.sh")
 for node in ("primary", "backup"):
     source = ROOT / "generated" / node / "config.json"
     config = json.loads(source.read_text(encoding="utf-8"))

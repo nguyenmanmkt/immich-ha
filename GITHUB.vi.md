@@ -2,6 +2,36 @@
 
 Repo dự kiến ở thư mục chứa README.md này; source ứng dụng nằm trong cloudflare-ha/.
 
+## Cập nhật repo đã có
+
+Chạy kiểm tra từ `cloudflare-ha/` trước khi stage:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+node --test tests/*.test.mjs
+python tools/embed-ui.py
+python tools/prepare-github.py
+```
+
+Từ thư mục gốc repo, xem working tree rồi stage/kiểm tra phần định chia sẻ:
+
+```bash
+git status --short
+git diff --stat
+git add .
+git diff --cached --name-only
+git diff --cached
+```
+
+Chạy lại audit sau khi stage (`python cloudflare-ha/tools/prepare-github.py`). Chỉ khi đã đọc staged diff và audit không có findings, tự commit/push:
+
+```bash
+git commit -m "Document quorum fallback and witness Funnel deployment"
+git push
+```
+
+Không cần `git init` hoặc tạo lại remote khi repo đã có. Source audit không sửa index, không commit/push, không deploy và không SSH. Nó đọc file tracked/untracked không bị ignore trong working tree; nếu index và working tree khác nhau, staged diff vẫn cần được đọc riêng. Không dùng `git add -f` để đưa file riêng vào repo.
+
 ## File được chia sẻ
 
 Source Worker, web, agent, tests, tài liệu hiện tại, cấu hình mẫu và workflow kiểm tra. project.json, .env, wrangler.jsonc, generated/, private keys, database dumps, ZIP node và ghi chép migration riêng không được đưa lên.
@@ -16,7 +46,7 @@ python tools/prepare-github.py --zip
 
 ZIP kết quả nằm trong generated/github-source.zip. Đây là ZIP source công khai; khác hoàn toàn primary-v2.zip / backup-v2.zip chứa token riêng. Công cụ kiểm tra các file sẽ chia sẻ, tìm secret đã lưu cục bộ và một số định dạng secret phổ biến. Không thay thế kiểm tra thủ công hoặc secret scanning của GitHub.
 
-## Tạo repo và commit
+## Chỉ khi tạo repo lần đầu
 
 Từ thư mục chứa README.md:
 

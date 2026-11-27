@@ -64,6 +64,54 @@ function find(root, predicate) {
   for (const c of root.children) { const found = find(c, predicate); if (found) return found; }
 }
 
+test('Funnel monitor exposes real route and HTTP latency and marks old readings stale', () => {
+  const s=fixture();
+  assert.equal(setup(s).elements.get('#funnel-panel').hidden,true);
+  s.funnel={url:'https://witness.example.ts.net',checkedAt:s.serverTime,state:'healthy',ok:true,node:'primary',epoch:15,latencyMs:125};
+  let elements=setup(s).elements;
+  assert.equal(elements.get('#funnel-panel').hidden,false);
+  assert.equal(elements.get('#funnel-status').textContent,'Hoạt động');
+  assert.equal(elements.get('#funnel-route').textContent,'Proxmox3 · 125 ms');
+  s.funnel.checkedAt-=181000;
+  elements=setup(s).elements;
+  assert.equal(elements.get('#funnel-status').textContent,'Kết quả cũ');
+  assert.ok(!elements.get('#funnel-status').className.includes('green'));
+});
+
+test('Funnel settings list common and node addresses and require witness confirmation for off state',()=>{
+  const s=fixture();s.funnel={url:'https://witness.example.ts.net',tailscaleIp:'100.64.0.3',checkedAt:s.serverTime,state:'healthy',ok:true,node:'primary',control:{enabled:false,confirmed:false,reportedAt:s.serverTime}};
+  s.nodes.primary.funnelUrl='https://a.example.ts.net';s.nodes.primary.tailscaleIp='100.64.0.1';
+  s.nodes.backup.funnelUrl='https://b.example.ts.net';s.nodes.backup.tailscaleIp='100.64.0.2';
+  let elements=setup(s).elements;
+  assert.equal(elements.get('#funnel-toggle').checked,false);
+  assert.equal(elements.get('#funnel-status').textContent,'Đang tắt…');
+  assert.equal(elements.get('#funnel-addresses').children.length,3);
+  assert.ok(find(elements.get('#funnel-addresses'),e=>e.href==='https://b.example.ts.net/'));
+  assert.ok(find(elements.get('#funnel-addresses'),e=>e.textContent==='100.64.0.3'));
+  elements.get('#funnel-settings-body').hidden=true;
+  elements.get('#funnel-settings-button').events.click();
+  assert.equal(elements.get('#funnel-settings-body').hidden,false);
+  s.funnel.control.confirmed=true;
+  elements=setup(s).elements;
+  assert.equal(elements.get('#funnel-status').textContent,'Đã tắt');
+});
+
+test('Funnel replaces the failover tile and return remains a separate switch', () => {
+  const s=fixture();s.preference.enabled=false;
+  const { elements }=setup(s);
+  assert.equal(elements.has('#auto-toggle'),false);
+  assert.equal(elements.has('#auto-state'),false);
+  assert.equal(elements.get('#return-toggle').checked,false);
+  const html=readFileSync(new URL('../web/index.html',import.meta.url),'utf8');
+  assert.ok(html.includes('<strong>Tự trở về máy ưu tiên</strong>'));
+  assert.ok(html.indexOf('id="funnel-panel"') > html.indexOf('class="mushroom-controls quick-controls"'));
+});
+
+test('route mismatch describes observations without claiming a transfer is underway', () => {
+  const s=fixture();s.funnel={url:'https://witness.example.ts.net',checkedAt:s.serverTime,state:'route-mismatch',ok:true,node:'backup',epoch:14};
+  assert.equal(setup(s).elements.get('#funnel-status').textContent,'Chưa khớp active');
+});
+
 test('one bottom progress card prioritizes live takeover over completed jobs', () => {
   const html=readFileSync(new URL('../web/index.html',import.meta.url),'utf8');
   assert.equal([...html.matchAll(/id="transition-panel"/g)].length,1);
@@ -221,4 +269,54 @@ test('native backup page distinguishes absent, present and stale unseen copies',
   page = setup(s).elements.get('#backup-list');
   assert.equal(find(page, (x) => x.textContent === 'Chưa có'), undefined);
   assert.ok(find(page, (x) => x.textContent === 'Chưa xác nhận'));
+});
+
+test('completed upgrades show current versions without historical success banners or unusable controls',()=>{
+  const s=fixture();s.upgradeRecipes=[{version:'3.4.2',fromVersion:'3.4.1',recipe:'native-3.4.2-r1'}];
+  s.immichUpgrade={phase:'completed',version:'3.4.2',source:'primary',epoch:1};
+  s.operation={kind:'upgrade-apply',upgrade:{},status:'succeeded',index:0,steps:[]};
+  for(const n of ['primary','backup'])s.agents[n].metrics.appVersion='3.4.2';
+  const {elements}=setup(s);
+  for(const id of ['upgrade-phase','upgrade-progress','upgrade-options','upgrade-buttons'])assert.equal(elements.get('#'+id).hidden,true,id);
+  assert.equal(elements.get('#upgrade-hint').textContent,'Chưa có bản nâng cấp khả dụng.');
+  assert.ok(find(elements.get('#upgrade-nodes'),x=>x.textContent==='3.4.2'));
+  s.agents.backup.at-=300000;
+  assert.match(setup(s).elements.get('#upgrade-hint').textContent,/Chưa xác nhận/);
+});
+
+test('upgrade failures retain visible recovery controls even after both code versions change',()=>{
+  const s=fixture();s.upgradeRecipes=[{version:'3.4.2',fromVersion:'3.4.1',recipe:'native-3.4.2-r1'}];
+  s.immichUpgrade={phase:'applying',applying:true,version:'3.4.2'};
+  s.operation={kind:'upgrade-apply',upgrade:{},status:'failed',error:'Khởi động thất bại',index:0,steps:[]};
+  for(const n of ['primary','backup'])s.agents[n].metrics.appVersion='3.4.2';
+  const {elements}=setup(s);
+  assert.equal(elements.get('#upgrade-retry').hidden,false);
+  assert.equal(elements.get('#upgrade-progress').hidden,false);
+  assert.match(elements.get('#upgrade-progress').textContent,/Khởi động thất bại/);
+  assert.equal(elements.get('#upgrade-phase').textContent,'CẦN XỬ LÝ');
+});
+
+test('backup filters distinguish fresh copies on both nodes from records needing confirmation',()=>{
+  const s=fixture(),file={name:'immich-db-backup.sql.gz',bytes:100,modifiedAt:s.serverTime};
+  for(const n of ['primary','backup'])s.agents[n].metrics.builtinBackups={state:'ok',checkedAt:s.serverTime,count:1,bytes:100,files:[file]};
+  const {elements,context}=setup(s);elements.get('#backup-filter').value='both';vm.runInContext('renderBackups()',context);
+  assert.equal(elements.get('#backup-count').textContent,'1');
+  s.agents.backup.at-=300000;vm.runInContext('renderBackups()',context);
+  assert.equal(elements.get('#backup-count').textContent,'0');
+  elements.get('#backup-filter').value='attention';vm.runInContext('renderBackups()',context);
+  assert.equal(elements.get('#backup-count').textContent,'1');
+  assert.ok(find(elements.get('#backup-list'),x=>x.textContent==='Có · số liệu cũ'));
+});
+
+test('history groups dates and filters friendly server names and upgrade actions',()=>{
+  const s=fixture();s.audit=[{at:s.serverTime,action:'upgrade-apply',actor:'operator@example.com',details:'primary → backup'},
+    {at:s.serverTime-86400000,action:'set-auto',actor:'system',details:'enabled'}];
+  const {elements,context}=setup(s);
+  assert.equal(elements.get('#history-count').textContent,'2 sự kiện');
+  assert.ok(find(elements.get('#history-list'),x=>x.className==='history-day'));
+  elements.get('#history-search').value='Asus';vm.runInContext('renderHistory()',context);
+  assert.equal(elements.get('#history-count').textContent,'1 sự kiện');
+  assert.ok(find(elements.get('#history-list'),x=>x.textContent==='Proxmox3 → Asus PVE'));
+  elements.get('#history-filter').value='settings';vm.runInContext('renderHistory()',context);
+  assert.equal(elements.get('#history-count').textContent,'0 sự kiện');
 });

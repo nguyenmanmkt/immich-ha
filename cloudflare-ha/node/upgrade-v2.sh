@@ -6,7 +6,7 @@ set -euo pipefail
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 test -f /etc/immich-ha/config.json
 test -f "$base/config.json"
-for file in agent.py ha_runtime.py pg_stream.py immich_upgrade.py build-immich-release.sh maintenance-v2.py app-run-v2; do test -f "$base/$file"; done
+for file in agent.py ha_runtime.py pg_stream.py quorum_lock.py quorum_authority.py immich_upgrade.py build-immich-release.sh maintenance-v2.py app-run-v2; do test -f "$base/$file"; done
 bash -n "$base/build-immich-release.sh"
 bash -n "$base/app-run-v2"
 mountpoint -q /mnt/immich-storage
@@ -101,6 +101,8 @@ install -m 600 "$base/agent.py" /usr/local/lib/immich-ha/ha_agent.py
 install -m 600 "$base/ha_runtime.py" /usr/local/lib/immich-ha/ha_runtime.py
 install -m 600 "$base/pg_stream.py" /usr/local/lib/immich-ha/pg_stream.py
 install -m 600 "$base/immich_upgrade.py" /usr/local/lib/immich-ha/immich_upgrade.py
+install -m 600 "$base/quorum_lock.py" /usr/local/lib/immich-ha/quorum_lock.py
+install -m 600 "$base/quorum_authority.py" /usr/local/lib/immich-ha/quorum_authority.py
 install -m 700 "$base/build-immich-release.sh" /usr/local/lib/immich-ha/build-immich-release.sh
 python3 - <<'PY'
 import sys

@@ -20,6 +20,8 @@ def main():
             clients[node],g=m.connection(node)
             if g:gateways.append(g)
             m.upload_module(clients[node],m.ROOT/'node/pg_stream.py','/usr/local/lib/immich-ha/pg_stream.py')
+            for name in ('quorum_lock.py','quorum_authority.py'):
+                m.upload_module(clients[node],m.ROOT/'node'/name,'/usr/local/lib/immich-ha/'+name)
         for old,new in [(source,target),(target,source)]:
             print('STOP-STAGED',old,m.remote(clients[old],PREFIX+"ctl('stop');print(json.dumps(True))"),flush=True)
             print('PROMOTE-STAGED',new,m.remote(clients[new],PREFIX+"assert pg('SELECT pg_promote(true,30);',timeout=40)=='t';print(json.dumps(status()))",timeout=60),flush=True)

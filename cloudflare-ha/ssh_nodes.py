@@ -100,7 +100,7 @@ def upgrade(client, node):
     if info["mediaFreeBytes"] < 1024 ** 3:
         raise RuntimeError("Less than 1 GiB free on media volume; upgrade stopped")
     bundle = ROOT / "generated" / (node + "-v2.zip")
-    expected = {"config.json", "agent.py", "ha_runtime.py", "pg_stream.py", "immich_upgrade.py", "build-immich-release.sh", "maintenance-v2.py", "app-run-v2", "upgrade-v2.sh"}
+    expected = {"config.json", "agent.py", "ha_runtime.py", "pg_stream.py", "quorum_lock.py", "quorum_authority.py", "immich_upgrade.py", "build-immich-release.sh", "maintenance-v2.py", "app-run-v2", "upgrade-v2.sh"}
     with zipfile.ZipFile(bundle) as archive:
         if set(archive.namelist()) != expected:
             raise RuntimeError("Unexpected upgrade bundle files")

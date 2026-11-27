@@ -199,6 +199,8 @@ class Streaming:
 
     def activate(self):
         r = self.runtime
+        from quorum_authority import assert_writer
+        assert_writer(r)
         if r.read('immich-upgrade-lock.json', ''):
             return False
         if r.mode() == 'frozen':
@@ -217,17 +219,28 @@ class Streaming:
                 raise RuntimeError('Không có quyền promote PostgreSQL trên máy này')
             grant = getattr(r, 'grant', {})
             def valid_grant(margin=0):
+                assert_writer(r, margin)
                 if grant.get('role') != 'active' or grant.get('epoch') != authority['epoch'] or \
                         time.monotonic() + margin >= grant.get('deadline', 0):
                     raise RuntimeError('Lease đã hết hoặc không khớp epoch; không mở quyền ghi')
             valid_grant(45)
             if r.mode() == 'frozen':
                 return False
-            value = self.state()
+            try:
+                value = self.state()
+            except Exception:
+                # Quorum fencing stops PG, unlike a brief CF-only lease pause.
+                # Reopen only under a fresh admission and the current CF owner.
+                from quorum_authority import runtime_admission
+                if not runtime_admission(r) or r.mode() not in ('fenced','lease-paused'):raise
+                valid_grant(45)
+                ctl('start')
+                value = self.state()
             if value['inRecovery']:
                 if not self.can_promote(authority['epoch'] - 1, self.config['peer']):
                     raise RuntimeError('Bản PostgreSQL dự phòng chưa đủ điều kiện promote')
                 # Authority was checked immediately before the only promote operation.
+                valid_grant(40)
                 if pg('SELECT pg_promote(true,30);', timeout=40) != 't':
                     raise RuntimeError('PostgreSQL promote chưa hoàn tất')
             changed = r.mode() != 'active'
@@ -375,6 +388,9 @@ class Streaming:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        from quorum_authority import runtime_admission
+        admission = runtime_admission(r)
+        if admission:admission.release_frozen(getattr(r, 'grant', {}).get('epoch'))
         return {'fenceProtocol':1,'appStopped':True,'postgresStopped':True,
                 'originFenced':True,'frozenDurable':True}
 
@@ -512,6 +528,8 @@ class Streaming:
                     raise RuntimeError('PostgreSQL dự phòng chưa sẵn sàng promote')
                 return {'healthy':True,'seedEpoch':command['epoch'],'streaming':True}
             if action == 'resume':
+                from quorum_authority import assert_writer
+                assert_writer(r, 5)
                 ctl('start')
                 if self.state()['inRecovery']:
                     raise RuntimeError('Không tự promote qua lệnh resume')

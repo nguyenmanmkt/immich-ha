@@ -150,6 +150,8 @@ print(json.dumps({'assetRows':int(new)}))
         for node,c in clients.items():
             for local,path,mode in [
                 ('pg_stream.py','/usr/local/lib/immich-ha/pg_stream.py',0o600),
+                ('quorum_lock.py','/usr/local/lib/immich-ha/quorum_lock.py',0o600),
+                ('quorum_authority.py','/usr/local/lib/immich-ha/quorum_authority.py',0o600),
                 ('ha_runtime.py','/usr/local/lib/immich-ha/ha_runtime.py',0o600),
                 ('agent.py','/usr/local/lib/immich-ha/ha_agent.py',0o600),
                 ('agent.py','/usr/local/sbin/immich-ha-agent',0o700),

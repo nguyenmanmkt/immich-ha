@@ -3,6 +3,8 @@ import { initialState, heartbeat, recordProbe, admin, route, status, receiveResu
 import { authenticateAdmin, requireSameOrigin } from "./admin-auth.mjs";
 import { ADMIN_HTML, ADMIN_CSS, ADMIN_JS, ADMIN_STATUS_JS } from "./admin-ui.mjs";
 import { originAccessHeaders } from "./origin-access.mjs";
+import { probeFunnel, funnelStatus } from './funnel-health.mjs';
+import { initialFunnelControl, setFunnel, reportFunnel, publicFunnelControl } from './funnel-control.mjs';
 import { websocketResponse } from "./websocket-proxy.mjs";
 import { initialNotifications, publicNotifications, configureNotifications, queueTest, observeNotifications, slackPayload, postSlack, completeNotification } from "./notifications.mjs";
 
@@ -57,7 +59,8 @@ async function uiStatus(env, actor) {
   const value = await response.json();
   let nodes;
   try { nodes = JSON.parse(env.NODE_METADATA || "{}"); } catch { nodes = {}; }
-  return json({ ...value, nodes, publicUrl: `https://${env.PUBLIC_HOST}`, actorEmail: actor.email });
+  return json({ ...value, nodes, publicUrl: `https://${env.PUBLIC_HOST}`, actorEmail: actor.email,
+    funnel: value.funnel ? { ...value.funnel, tailscaleIp: env.FUNNEL_WITNESS_IP || null } : null });
 }
 
 async function adminUI(request, env) {
@@ -76,7 +79,7 @@ async function adminUI(request, env) {
       const text = await request.text();
       if (text.length > 4096) return json({ error: "Payload too large" }, 413);
       const input = JSON.parse(text);
-      if (!["set-auto", "set-recovery", "set-preference", "set-maintenance", "set-alerts", "test-alerts", "prepare", "switch", "resume", "upgrade-stage", "upgrade-apply", "upgrade-retry"].includes(input.action)) throw new Error("Thao tác không hợp lệ");
+      if (!["set-funnel", "set-recovery", "set-preference", "set-maintenance", "set-alerts", "test-alerts", "prepare", "switch", "resume", "upgrade-stage", "upgrade-apply", "upgrade-retry"].includes(input.action)) throw new Error("Thao tác không hợp lệ");
       const response = await call(env, "/admin", {
         action: input.action, target: input.target, enabled: input.enabled,
         version: input.version,
@@ -93,7 +96,7 @@ async function adminUI(request, env) {
 
 async function probeOrigins(env) {
   const readings = {};
-  await Promise.all(["primary", "backup"].map(async (node) => {
+  await Promise.all([...["primary", "backup"].map(async (node) => {
     try {
       const url = new URL("/__ha/health", originFor(env, node));
       const response = await fetch(url, {
@@ -116,7 +119,7 @@ async function probeOrigins(env) {
     } catch (error) {
       readings[node] = { ok: false, error: error.name === "TimeoutError" ? "timeout" : "origin fetch failed" };
     }
-  }));
+  }), (async () => { readings.funnel = await probeFunnel(env.FUNNEL_URL); })()]);
   const result = await call(env, "/probe", readings);
   if (!result.ok) throw new Error("Could not record origin probes");
   return result;
@@ -129,10 +132,14 @@ export class HAController extends DurableObject {
     this.env = env;
     this.state = null;
     this.notifications = initialNotifications();
+    this.funnelProbe = null;
+    this.funnelControl = initialFunnelControl();
     this.delivering = false;
     ctx.blockConcurrencyWhile(async () => {
       this.state = (await ctx.storage.get("state")) || initialState();
       this.notifications = (await ctx.storage.get("notifications")) || initialNotifications();
+      this.funnelProbe = (await ctx.storage.get('funnelProbe')) || null;
+      this.funnelControl = (await ctx.storage.get('funnelControl')) || initialFunnelControl();
     });
   }
 
@@ -144,19 +151,28 @@ export class HAController extends DurableObject {
       // Work on a copy: rejected operations must not partially change memory.
       const next = structuredClone(this.state);
       const notifications = structuredClone(this.notifications);
+      let funnelProbe = this.funnelProbe;
+      const funnelControl = structuredClone(this.funnelControl);
       let output;
       try {
         if (path === "/heartbeat") output = heartbeat(next, input.node, input, now);
         else if (path === "/probe") {
+          funnelProbe = input.funnel || null;
           for (const node of ["primary", "backup"]) recordProbe(next, node, input[node], now);
           output = status(next, now);
         } else if (path === "/admin") {
-          if (input.action === "set-alerts") {
+          if (input.action === 'set-funnel') {
+            if (!this.env.FUNNEL_CONTROL_TOKEN || !this.env.FUNNEL_URL) throw new Error('Funnel control is not installed');
+            setFunnel(funnelControl,input.enabled,now);
+          } else if (input.action === "set-alerts") {
             configureNotifications(notifications, input);
           } else if (input.action === "test-alerts") {
             queueTest(notifications, status(next, now), now);
           } else admin(next, input, now);
           output = status(next, now);
+        } else if (path === '/funnel-agent') {
+          reportFunnel(funnelControl,input,now);
+          output=publicFunnelControl(funnelControl,now);
         } else if (path === "/job-result") {
           receiveResult(next, input.node, input, now);
           output = { accepted: true };
@@ -178,10 +194,16 @@ export class HAController extends DurableObject {
       const writes = {};
       if (JSON.stringify(next) !== JSON.stringify(this.state)) writes.state = next;
       if (JSON.stringify(notifications) !== JSON.stringify(this.notifications)) writes.notifications = notifications;
+      if (JSON.stringify(funnelProbe) !== JSON.stringify(this.funnelProbe)) writes.funnelProbe = funnelProbe;
+      if (JSON.stringify(funnelControl) !== JSON.stringify(this.funnelControl)) writes.funnelControl = funnelControl;
       if (Object.keys(writes).length) await this.ctx.storage.put(writes);
       this.notifications = notifications;
+      this.funnelProbe = funnelProbe;
+      this.funnelControl = funnelControl;
       if (["/status", "/probe", "/admin"].includes(path)) {
         output.alerts = publicNotifications(notifications);
+        output.funnel = funnelStatus(this.env.FUNNEL_URL, funnelProbe, now, next.owner, next.epoch);
+        if (output.funnel) output.funnel.control = this.env.FUNNEL_CONTROL_TOKEN ? publicFunnelControl(funnelControl,now) : null;
       }
       this.state = next;
       try { await this.scheduleNotifications(); } catch { /* Retry scheduling on the next heartbeat. */ }
@@ -228,6 +250,12 @@ export default {
     try {
       const url = new URL(request.url);
       if (env.ADMIN_HOST && url.hostname === env.ADMIN_HOST) return adminUI(request, env);
+      if (url.pathname === '/__ha/funnel-agent' && request.method === 'POST') {
+        if (!authorized(request,env.FUNNEL_CONTROL_TOKEN)) return json({error:'Unauthorized'},401);
+        const text=await request.text();
+        if (text.length>2048) return json({error:'Payload too large'},413);
+        return call(env,'/funnel-agent',JSON.parse(text));
+      }
       if (url.pathname === "/__ha/heartbeat" && request.method === "POST") {
         const node = nodeIdentity(request, env);
         if (!node) return json({ error: "Unauthorized" }, 401);

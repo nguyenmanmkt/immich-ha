@@ -6,6 +6,9 @@ case "$mode" in active|standby) ;; *) exit 0 ;; esac
 set -a
 . /opt/immich/.env
 unset DB_URL
+if [[ -f /etc/immich-ha/quorum-required ]]; then
+  test -f /var/lib/immich-ha/runtime/streaming-app.env
+fi
 if [[ -f /var/lib/immich-ha/runtime/streaming-app.env ]]; then
   . /var/lib/immich-ha/runtime/streaming-app.env
   [[ "$mode" == active ]] || exit 0
@@ -14,6 +17,13 @@ if [[ -f /var/lib/immich-ha/runtime/streaming-app.env ]]; then
 import time
 from pathlib import Path
 assert float(Path('/run/immich-ha-stream-grant').read_text()) > time.monotonic()
+required = Path('/etc/immich-ha/quorum-required')
+if required.exists():
+    import json
+    proof = json.loads(Path('/run/immich-ha-quorum-grant.json').read_text())
+    assert proof['clusterId'] == required.read_text().strip()
+    assert proof['bootId'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    assert proof['deadline'] > time.clock_gettime(time.CLOCK_BOOTTIME)
 PY
 fi
 DB_DATABASE_NAME=$(cat /var/lib/immich-ha/runtime/current-db)

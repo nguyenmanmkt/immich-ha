@@ -12,6 +12,7 @@ import pwd
 import shlex
 import signal
 import ssl
+import stat
 import subprocess
 import sys
 import threading
@@ -35,6 +36,22 @@ CONFIG = Path("/etc/immich-ha/config.json")
 STATE = Path("/var/lib/immich-ha")
 STANDBY = Path("/var/lib/immich-standby")
 MEDIA = Path("/mnt/immich-storage")
+HEARTBEAT_TEST = Path('/run/immich-ha-heartbeat-outage.json')
+
+
+def heartbeat_test_blocked(path=HEARTBEAT_TEST, now=None, boot_id=None):
+    """Root-only, boot-bound, expiring fault injection; never changes grants."""
+    try:
+        info=path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=0o600 or info.st_size>2048:return False
+        value=json.loads(path.read_text())
+        if value.get('version')!=1 or str(uuid.UUID(value['testId']))!=value['testId']:return False
+        current_boot=boot_id if boot_id is not None else Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        current=now if now is not None else time.clock_gettime(time.CLOCK_BOOTTIME)
+        start,end=value['startedBoot'],value['untilBoot']
+        if type(start) not in (int,float) or type(end) not in (int,float):return False
+        return value.get('bootId')==current_boot and 0<end-start<=180 and start<=current<end
+    except (OSError,ValueError,KeyError,TypeError):return False
 
 
 def command(*args, timeout=60):
@@ -161,6 +178,11 @@ class Agent:
         self.sync_paused = False
         self.runtime = None
         self.jobs = None
+        self.quorum_shadow = None
+        self.quorum_shadow_error = False
+        self.quorum_authority = None
+        self.fallback = None
+        self.grant_mutex = threading.RLock()
         self.next_poll_seconds = 60
         if config.get("runtime_version", 1) >= 2:
             if Runtime is None:
@@ -172,8 +194,32 @@ class Agent:
                 self.session = session_path.read_text().strip()
             else:
                 atomic_text(session_path, self.session)
+        quorum_config = Path('/etc/immich-ha/quorum-authority.json')
+        REQUIRED = Path('/etc/immich-ha/quorum-required')
+        if REQUIRED.exists() or quorum_config.exists():
+            from quorum_authority import Admission
+            value = json.loads(quorum_config.read_text())
+            if not self.runtime or not self.runtime.streaming or not config.get('enforce') or value['node'] != self.node or REQUIRED.read_text().strip() != value['clusterId']:
+                raise RuntimeError('Mandatory quorum configuration/identity mismatch')
+            self.quorum_authority = Admission(value, self.session, self.runtime.group)
+            self.runtime.quorum_authority = self.quorum_authority
+            if value['fallbackEnabled']:
+                from quorum_authority import Fallback
+                self.fallback = Fallback(self)
+        # Optional shadow observer has no influence on activate/fence/grants.
+        shadow_config=Path('/etc/immich-ha/quorum-shadow.json')
+        if shadow_config.is_file():
+            try:
+                from quorum_lock import ShadowMonitor
+                value=json.loads(shadow_config.read_text())
+                if value.get('node')!=self.node:raise ValueError('Wrong shadow identity')
+                self.quorum_shadow=ShadowMonitor(value)
+            except Exception:
+                self.quorum_shadow_error=True
+                logging.warning('Quorum shadow could not initialize; existing HA behavior retained')
 
     def node_info(self):
+        if self.fallback and self.fallback.local():return self.fallback.info()
         return request_json(self.config["controller_url"].rstrip("/") + "/__ha/node-info", self.config["agent_token"], timeout=10)
 
     def send_result(self, receipt):
@@ -192,6 +238,8 @@ class Agent:
         return self.runtime.node_healthy() if self.runtime else local_healthy()
 
     def activate(self):
+        if self.quorum_authority:
+            self.quorum_authority.assert_grant(self.view['epoch'], fresh=True)
         if self.runtime:
             self.runtime.grant = dict(self.view)
             self.activation_done = self.runtime.activate()
@@ -224,7 +272,11 @@ class Agent:
             if self.view.get("role") == "maintenance":
                 self.runtime.enter_maintenance()
             else:
-                self.runtime.fence(self.view["epoch"], self.view.get("owner"))
+                # A quorum timeout must stop a former writable primary too.
+                owner = self.view.get('owner')
+                if self.quorum_authority and self.view['role'] == 'active' and not self.quorum_authority.valid(self.view['epoch']):
+                    owner = None
+                self.runtime.fence(self.view["epoch"], owner)
             self.fenced = True
             return
         if self.node == "primary":
@@ -240,6 +292,7 @@ class Agent:
         self.fenced = True
 
     def tick(self):
+        if self.fallback:self.fallback.maintain()
         enforcing = self.enforcing()
         if self.config.get("enforce") and not enforcing:
             self.view = {**self.view, "ready": False, "deadline": 0}
@@ -257,14 +310,47 @@ class Agent:
         }
         if self.runtime:
             payload.update(protocolVersion=2, metrics=self.runtime.telemetry(), progress=self.jobs.progress)
-        response = request_json(self.config["controller_url"].rstrip("/") + "/__ha/heartbeat",
-                                self.config["agent_token"], payload, timeout=5)
+            if self.quorum_authority:payload['metrics']['quorumAuthority'] = self.quorum_authority.telemetry()
+            try:
+                if self.quorum_shadow:payload['metrics']['quorumShadow']=self.quorum_shadow.telemetry()
+                elif self.quorum_shadow_error:payload['metrics']['quorumShadow']={'mode':'shadow','state':'unavailable'}
+            except Exception:pass
+        if self.fallback:payload['quorumReport']=self.fallback.report()
+        try:
+            if self.fallback and heartbeat_test_blocked():
+                raise urllib.error.URLError('Controlled expiring heartbeat outage test')
+            response = request_json(self.config["controller_url"].rstrip("/") + "/__ha/heartbeat",
+                                    self.config["agent_token"], payload, timeout=5)
+        except (urllib.error.URLError,TimeoutError,ConnectionError) as error:
+            if not self.fallback or isinstance(error,urllib.error.HTTPError) and error.code not in (429,500,502,503,504):raise
+            logging.warning('Cloudflare control unavailable; checking shared quorum authority')
+            self.fallback.failure();return
+        self.next_poll_seconds = min(60, max(5, response.get('nextPollSeconds',60)))
+        if self.fallback and not self.fallback.response(response):return
         role = response["role"]
         epoch = int(response["epoch"])
         previous_epoch = self.view["epoch"]
         # Conservative local expiry: time spent waiting for the response is not added.
         deadline = started + max(0, int(response["leaseMs"]) / 1000 - 10)
-        self.view = {"role": role, "owner": response.get("owner"), "epoch": epoch, "deadline": deadline, "ready": False}
+        proposed = {"role": role, "owner": response.get("owner"), "epoch": epoch, "deadline": deadline, "ready": False}
+        with self.grant_mutex:
+            if self.quorum_authority:
+                if role == 'active':
+                    command = response.get('command') or {}
+                    resume = command.get('action') == 'resume' and command.get('source') == self.node and command.get('epoch') == epoch
+                    policy=None
+                    if response.get('quorum'):
+                        from quorum_authority import control_policy
+                        policy=control_policy(self.quorum_authority.config,response)
+                    try:self.quorum_authority.admit(proposed, resume=resume,policy=policy,ack=(response.get('quorum') or {}).get('ack'))
+                    except RuntimeError:
+                        if self.quorum_authority.state != 'durably-released' or self.runtime.mode() != 'frozen':raise
+                        deadline = proposed['deadline'] = 0
+                else:self.quorum_authority.clear()
+            self.view = proposed
+        try:
+            if self.quorum_shadow:self.quorum_shadow.submit(self.view,self.session)
+        except Exception:pass
         self.next_poll_seconds = min(60, max(5, response.get("nextPollSeconds", 60)))
         if self.runtime and self.runtime.streaming and previous_epoch != epoch:
             self.next_poll_seconds = 5  # Acknowledge the new epoch/replica readiness promptly.
@@ -274,7 +360,7 @@ class Agent:
             if enforcing:
                 self.activate()
             self.view = {**self.view, "ready": local_healthy() and time.monotonic() < deadline}
-        elif enforcing:
+        elif enforcing and not (self.quorum_authority and self.runtime.mode() == 'frozen' and role == 'active'):
             self.fence()
         if self.jobs:
             self.jobs.receive(response.get("command"))
@@ -293,6 +379,19 @@ class Agent:
                         logging.error("Could not finish local fencing; origin authorization remains closed")
             time.sleep(self.next_poll_seconds)
 
+    def grant_valid(self):
+        return time.monotonic() < self.view['deadline'] and (self.quorum_authority is None or self.quorum_authority.valid(self.view['epoch']))
+
+    def watch_grant(self):
+        # Independent of slow heartbeats/jobs: close and fence on local expiry.
+        while True:
+            with self.grant_mutex:
+                frozen = self.quorum_authority and self.quorum_authority.state == 'durably-released' and self.runtime.mode() == 'frozen'
+                if self.config.get('enforce') and self.view['role'] == 'active' and not frozen and not self.grant_valid():
+                    try:self.fence()
+                    except Exception:logging.error('Quorum watchdog could not finish fencing; origin remains closed')
+            time.sleep(1)
+
 
 def handler_for(agent):
     class Handler(BaseHTTPRequestHandler):
@@ -303,16 +402,18 @@ def handler_for(agent):
                 return
             if self.path == "/health":
                 ok = agent.node_healthy() and os.path.ismount(MEDIA)
-            elif self.path == "/authorize":
+            elif self.path in ("/authorize", "/authorize-local"):
                 view = agent.view
                 ok = view["role"] == "active" and view["ready"] and \
-                    time.monotonic() < view["deadline"] and \
-                    (agent.runtime is None or agent.runtime.mode() == 'active') and \
-                    self.headers.get("X-Immich-HA-Epoch") == str(view["epoch"])
+                    agent.grant_valid() and \
+                    (agent.runtime is None or agent.runtime.mode() == 'active')
+                if self.path == '/authorize-local':
+                    ok = ok and agent.config.get('enforce') is True and agent.quorum_authority is not None and os.path.ismount(MEDIA)
+                else:ok = ok and self.headers.get("X-Immich-HA-Epoch") == str(view["epoch"])
             else:
                 self.send_error(404)
                 return
-            self.send_response(200 if ok else 403 if self.path == "/authorize" else 503)
+            self.send_response(200 if ok else 403 if self.path.startswith('/authorize') else 503)
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -340,6 +441,7 @@ def main():
     signal.signal(signal.SIGHUP, reload_mode)
     server = ThreadingHTTPServer(("127.0.0.1", 9081), handler_for(agent))
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    if agent.quorum_authority:threading.Thread(target=agent.watch_grant, name='quorum-fencing', daemon=True).start()
     logging.info("Agent started for %s; enforce=%s", agent.node, config.get("enforce", False))
     agent.run()
 

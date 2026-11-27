@@ -47,6 +47,24 @@ class ProjectConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.load(self.project)
 
+    def test_funnel_addresses_for_nodes_and_witness_are_optional_validated_metadata(self):
+        self.project['witnessTailscaleIp']='100.64.0.3'
+        self.project['nodes']['primary'].update(funnelUrl='https://a.example.ts.net',tailscaleIp='100.64.0.1')
+        settings=self.load(self.project);variables=worker_variables(settings)
+        self.assertEqual(variables['FUNNEL_WITNESS_IP'],'100.64.0.3')
+        self.assertEqual(json.loads(variables['NODE_METADATA'])['primary']['funnelUrl'],'https://a.example.ts.net')
+        self.project['nodes']['primary']['tailscaleIp']='8.8.8.8'
+        with self.assertRaises(ValueError):self.load(self.project)
+
+    def test_optional_funnel_monitor_url_is_validated_and_passed_to_worker(self):
+        self.assertEqual(worker_variables(self.project)['FUNNEL_URL'],'')
+        self.project['funnelUrl']='https://witness.example.ts.net/'
+        self.assertEqual(worker_variables(self.load(self.project))['FUNNEL_URL'],'https://witness.example.ts.net')
+        for value in ('http://witness.example.ts.net','https://127.0.0.1','https://example.org','https://user:pass@witness.example.ts.net','https://witness.example.ts.net/path','https://witness.example.ts.net?secret=x','https://witness.example.ts.net:8090'):
+            with self.subTest(value=value):
+                self.project['funnelUrl']=value
+                with self.assertRaises(ValueError):self.load(self.project)
+
     def test_rejects_invalid_origin_and_access_domains(self):
         for value in ("http://node.example.net", "https://node.example.net/path", "https://user:password@node.example.net", "https://node.example.net:443"):
             with self.subTest(value=value):

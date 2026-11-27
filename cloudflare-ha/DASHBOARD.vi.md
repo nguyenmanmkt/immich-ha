@@ -7,6 +7,8 @@ App / trình duyệt -> publicHost -> Worker -> origin gate của máy active ->
 Dashboard -> Worker API -> Durable Object -> agent LXC nhận lệnh qua heartbeat
 File media, danh mục WAL và SQL backup -> Syncthing giữa hai LXC
 Database -> PostgreSQL streaming trực tiếp qua Tailscale
+App qua Funnel chung -> gateway witness -> quorum owner -> gateway node active
+⚙ / công tắc Funnel -> Worker storage riêng -> timer witness -> Tailscale CLI
 ```
 
 Ảnh/database Immich không được lưu trong Durable Object. Durable Object giữ vai trò, quyền phục vụ, tiến trình và cấu hình điều phối.
@@ -26,12 +28,18 @@ upgrade-v2.sh yêu cầu auto tắt, không có job đang chạy và định dan
 
 ## Các điều khiển trên dashboard
 
-- **Tự tiếp quản**: cho phép chuyển máy sau sự cố được xác nhận, khi standby đủ điều kiện.
+Thẻ **Funnel chung** theo dõi đường truy cập dự phòng qua Internet mỗi phút: ping Immich, định danh máy và epoch phải khớp owner hiện tại mới báo hoạt động. Hiển thị URL mở trực tiếp, thời gian kiểm tra và độ trễ HTTP (khác độ trễ ping Tailscale). Kết quả quá 3 phút được đánh dấu cũ. Đây là quan sát, không cấp quyền hay tác động bàn giao. Khi Cloudflare mất, dashboard/monitor này cũng có thể mất; bản thân Funnel không phụ thuộc monitor. Cấu hình URL tại `funnelUrl` trong `project.json`, để trống để ẩn thẻ.
+
+- **Funnel chung**: thẻ nhỏ trong hàng điều khiển, thay vị trí cũ của thẻ tự chuyển khi sự cố. Bấm icon để mở URL; rê chuột xem URL và lần kiểm tra cuối. Mỗi probe dùng URL có nonce riêng và yêu cầu không dùng cache, tránh phát lại phản hồi từ owner cũ. “Chưa khớp active” mô tả kết quả quan sát lệch owner/epoch, không khẳng định đang có bàn giao.
+- **⚙ Funnel**: xem/mở/sao chép URL chung, URL riêng từng node và IP Tailscale. Địa chỉ lấy từ project, không hardcode. Công tắc chỉ bật/tắt Funnel chung trên witness (cần cài `tools/install-funnel-control.py --deploy`); vẫn giữ URL riêng và đường Cloudflare. UI chờ xác nhận thật từ witness, có thể mất khoảng 15 giây; báo riêng khi witness mất liên lạc. Cấu hình địa chỉ qua `funnelUrl`, `witnessTailscaleIp`, `nodes.*.funnelUrl` và `nodes.*.tailscaleIp` trong project.
+- **Tự chuyển khi sự cố** luôn được bật trong vận hành bình thường, không có công tắc hay thẻ riêng trên dashboard. Sau bootstrap, bật auto bằng API vận hành khi hai máy đã được kiểm tra. Bảo trì, nâng cấp và bàn giao vẫn tạm khóa theo quy trình an toàn. API vận hành `set-auto` giữ riêng cho các script triển khai, không được phép qua `/api/action` của dashboard.
 - **Tự đồng bộ dự phòng**: tự chuẩn bị máy còn lại, xác nhận WAL và file; tạo lại replica vật lý khi cần.
-- **Máy ưu tiên**: công tắc bật/tắt tự trở về; nút ⚙ chọn máy. Ngôi sao trên thẻ đánh dấu cấu hình ưu tiên.
+- **Tự trở về máy ưu tiên**: công tắc chỉ bật/tắt bàn giao về máy đã chọn khi máy đó sẵn sàng; không ảnh hưởng tự chuyển khi sự cố. Nút ⚙ chọn máy. Ngôi sao trên thẻ đánh dấu cấu hình ưu tiên.
 - **Slack**: công tắc bật/tắt; ⚙ lưu webhook, gửi thử hoặc xóa. Webhook không trả lại qua API. Alert máy mất/sẵn sàng được gộp khoảng 60 giây để giảm lặp.
 - **⚙ trong thẻ máy**: chi tiết, Bảo trì; máy dự phòng có Đồng bộ lại dự phòng và Chuyển active. Máy active không có nút tự bàn giao cho chính nó.
 - **Backup**: inventory các file SQL gốc Immich trên từng máy; bản có tên giống nhau chưa phải bằng chứng checksum bằng nhau. Thao tác quản lý gốc mở trong Immich.
+- **Nâng cấp**: hiển thị phiên bản đang ghi nhận trên từng máy. Khi chưa có recipe phù hợp để nâng từ phiên bản hiện tại, ẩn các nút chuẩn bị/cài đặt. Trạng thái hoàn tất cũ không dùng làm trạng thái hệ thống; chỉ giữ tiến trình đang chạy hoặc lỗi cần xử lý. Kết quả job nâng cấp gần nhất xem trong Lịch sử.
+- **Backup / Lịch sử**: lọc bản sao có trên hai máy hoặc cần kiểm tra; số liệu cũ vẫn được đánh dấu, không coi là xác nhận đồng bộ. Lịch sử nhóm ngày theo giờ Việt Nam, tìm kiếm theo thao tác/tên máy/người thực hiện và lọc vai trò, nâng cấp, cài đặt. Trên điện thoại, bảng backup chuyển thành các dòng thông tin trong từng bản sao.
 
 ## Đồng bộ và chuyển máy
 
@@ -54,6 +62,15 @@ systemctl list-timers 'immich-ha-*'
 ```
 
 Máy quản trị có thể chạy `python admin.py status --compact` và `python check-public.py`. Đây là kiểm tra thật và cần cấu hình/khóa; không chạy chúng trong CI công khai.
+
+Trên **witness**, log các thành phần độc lập:
+
+```bash
+systemctl status immich-ha-quorum immich-ha-router immich-ha-funnel-control.timer --no-pager
+journalctl -u immich-ha-router -u immich-ha-funnel-control -n 80 --no-pager
+```
+
+`immich-ha-quorum` là thành viên etcd, `immich-ha-router` chọn route chỉ đọc, `immich-ha-funnel-control` chỉ đổi listener Funnel chung. Đừng dừng quorum để thử một lỗi giao diện hoặc proxy. Funnel riêng của standby báo 503 là đúng; Funnel chung phải theo active. Thẻ “Chưa khớp active” cần đối chiếu phản hồi mới node/epoch, không ép đổi active để làm thẻ xanh.
 
 ## Thống kê
 

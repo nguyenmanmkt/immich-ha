@@ -428,6 +428,8 @@ class Upgrader:
     def start(self):
         from pg_stream import status,GRANT
         from ha_runtime import atomic
+        from quorum_authority import assert_writer
+        assert_writer(self.r, 30)
         self.guard()
         grant=getattr(self.r,'grant',{})
         if self.r.node!=self.c['source'] or grant.get('role')!='active' or grant.get('owner')!=self.r.node or grant.get('epoch')!=self.c['epoch'] or time.monotonic()+30>=grant.get('deadline',0):
@@ -443,6 +445,7 @@ class Upgrader:
         # grant before systemd starts, rather than an expired pre-freeze lease.
         self.guard()
         if time.monotonic()+5>=grant['deadline']:raise RuntimeError('Lease đã hết trước khi mở bản mới')
+        assert_writer(self.r, 5)
         atomic(GRANT,str(grant['deadline']),self.r.group)
         self.r.write('mode','active')
         self.r.write(LOCK_NAME,'')

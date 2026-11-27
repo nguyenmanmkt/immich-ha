@@ -5,6 +5,7 @@ import { recoveryState, reconcileStandby } from "./recovery.mjs";
 import { preferenceState, setPreference, reconcilePreference, RETURN_STABLE_MS } from "./failback.mjs";
 import { maintenanceFor, excludedNode, setNodeMaintenance } from "./node-maintenance.mjs";
 import { UPGRADE_RECIPES, upgradeLocked } from './immich-upgrade.mjs';
+import { configureQuorum, observeQuorum, quorumPaused, quorumReply } from './quorum-control.mjs';
 export const LIMITS = Object.freeze({
   leaseMs: 240_000,
   fenceMs: 30_000,
@@ -44,6 +45,7 @@ const eligibility = (s, now) => (node, serving) => serving ? healthy(s, node, no
 
 export function advance(s, now) {
   upgradeOperations(s);
+  if (quorumPaused(s)) return s;
   advanceOperation(s, now, eligibility(s, now));
   if (!busy(s) && !s.operation?.maintenance && !s.pending) {
     if (healthy(s, s.owner, now)) s.failureSince = null;
@@ -119,6 +121,10 @@ export function heartbeat(s, node, input, now) {
     metrics: input.protocolVersion >= 2 ? cleanMetrics(input.metrics) : null,
   };
   if (input.progress) progressOperation(s, node, input.progress, now);
+  observeQuorum(s, node, input, now);
+  if (quorumPaused(s) && s.quorumControl.mode !== 'recovering') {
+    return reply(s,node,{role:'quorum-wait',owner:s.owner,epoch:s.epoch,leaseMs:0});
+  }
   advance(s, now);
   if (s.owner !== node) {
     if (maintenanceFor(s, node).enabled) return reply(s, node, { role: "maintenance", owner: s.owner, epoch: s.epoch, leaseMs: 0 });
@@ -139,9 +145,10 @@ export function heartbeat(s, node, input, now) {
 }
 
 function reply(s, node, grant) {
-  return { ...grant, auto: s.auto, command: operationCommand(s, node),
+  const quorum = quorumReply(s,node);
+  return { ...grant, quorum, auto: s.auto, command: quorumPaused(s) ? null : operationCommand(s, node),
     operation: busy(s) ? { id: s.operation.id, status: s.operation.status } : null,
-    nextPollSeconds: busy(s) || grant.role === "maintenance" && s.heartbeats[node]?.metrics?.appMode !== "maintenance" || (grant.role === "active" && !s.ready) ? 5 : 60 };
+    nextPollSeconds: quorumPaused(s) || busy(s) || grant.role === "maintenance" && s.heartbeats[node]?.metrics?.appMode !== "maintenance" || (grant.role === "active" && !s.ready) ? 5 : 60 };
 }
 
 function cleanMetrics(input) {
@@ -149,7 +156,7 @@ function cleanMetrics(input) {
   // Only data used by the dashboard/job engine; never accept arbitrary config/secrets.
   const output = {};
   for (const key of ["runtimeV2", "appMode", "appVersion", "postgresVersion", "disk", "databaseDisk",
-    "memory", "cpu", "backup", "builtinBackups", "seed", "syncthing", "immich", "tailscale", "lastError", "runtimeBusy", "mediaMounted", "maintenanceControl", "postgresStreaming", "immichUpgrade"]) {
+    "memory", "cpu", "backup", "builtinBackups", "seed", "syncthing", "immich", "tailscale", "lastError", "runtimeBusy", "mediaMounted", "maintenanceControl", "postgresStreaming", "immichUpgrade", "quorumShadow", "quorumAuthority"]) {
     if (input[key] !== undefined) output[key] = input[key];
   }
   if (JSON.stringify(output).length > 12_000) throw new Error("Metrics payload too large");
@@ -158,6 +165,11 @@ function cleanMetrics(input) {
 
 export function admin(s, input, now) {
   upgradeOperations(s);
+  if (input.action === 'set-quorum-policy') {
+    if (busy(s) || s.pending || upgradeLocked(s)) throw new Error('Finish current operation first');
+    configureQuorum(s,input,now);return;
+  }
+  if (quorumPaused(s)) throw new Error('Đang đối chiếu quyền điều phối với quorum; chờ máy active xác nhận');
   if (upgradeLocked(s) && !['upgrade-retry','set-alerts','test-alerts'].includes(input.action)) throw new Error('Nâng cấp chưa hoàn tất; chỉ tiếp tục nâng cấp, không đổi vai trò hoặc bật tự động');
   if (input.action === "set-maintenance") {
     setNodeMaintenance(s, input, now, (node) => healthy(s, node, now)); advance(s, now); return;
@@ -224,6 +236,10 @@ export function status(s, now) {
     preference: { ...preferenceState(s), stableMs: RETURN_STABLE_MS },
     nodeMaintenance: s.nodeMaintenance || {},
     immichUpgrade: s.immichUpgrade || null, upgradeRecipes: UPGRADE_RECIPES, immichUpgradeProtocol: 2,
+    quorumShadowProtocol: 1,
+    quorumAuthorityProtocol: 1,
+    quorumFallbackProtocol: 2,
+    quorumControl: s.quorumControl ? {enabled:s.quorumControl.enabled,clusterId:s.quorumControl.clusterId,mode:s.quorumControl.mode,reconciledAt:s.quorumControl.reconciledAt || null} : null,
   };
 }
 

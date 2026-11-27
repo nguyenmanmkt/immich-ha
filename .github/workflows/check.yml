@@ -20,8 +20,14 @@ jobs:
           python-version: '3.12'
       - name: Audit publishable files
         run: python tools/prepare-github.py
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-ssh.txt
       - name: Test Python
         run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Check Python entrypoint syntax without executing operations
+        run: |
+          python -m compileall -q node tools tests
+          python -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8-sig'), filename=str(p)) for p in pathlib.Path('.').glob('*.py')]"
       - name: Test JavaScript
         run: node --test tests/*.test.mjs
       - name: Check shell syntax

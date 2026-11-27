@@ -57,18 +57,18 @@ def main():
             m.remote(c,'''import json,shutil
 from pathlib import Path
 save=Path('/etc/immich-ha')/('upgrade-feature-'+INPUT['stamp']);save.mkdir(mode=0o700)
-for name in ['ha_runtime.py','pg_stream.py','immich_upgrade.py','build-immich-release.sh','ha_agent.py']:
+for name in ['ha_runtime.py','pg_stream.py','quorum_lock.py','quorum_authority.py','immich_upgrade.py','build-immich-release.sh','ha_agent.py']:
  p=Path('/usr/local/lib/immich-ha')/name
  if p.exists():shutil.copy2(p,save/name)
 shutil.copy2('/usr/local/sbin/immich-ha-agent',save/'agent-exec')
 print(json.dumps({'saved':str(save)}))
 ''',{'stamp':stamp})
-            for name in ['ha_runtime.py','pg_stream.py','immich_upgrade.py','build-immich-release.sh']:
+            for name in ['ha_runtime.py','pg_stream.py','quorum_lock.py','quorum_authority.py','immich_upgrade.py','build-immich-release.sh']:
                 m.upload_module(c,m.ROOT/'node'/name,'/usr/local/lib/immich-ha/'+name,0o700 if name.endswith('.sh') else 0o600)
             m.upload_module(c,m.ROOT/'node/agent.py','/usr/local/lib/immich-ha/ha_agent.py')
             m.upload_module(c,m.ROOT/'node/agent.py','/usr/local/sbin/immich-ha-agent',0o700)
             print(node,m.remote(c,'''import subprocess,py_compile,json,sys
-for name in ['ha_runtime.py','pg_stream.py','immich_upgrade.py','ha_agent.py']:py_compile.compile('/usr/local/lib/immich-ha/'+name,doraise=True)
+for name in ['ha_runtime.py','pg_stream.py','quorum_lock.py','quorum_authority.py','immich_upgrade.py','ha_agent.py']:py_compile.compile('/usr/local/lib/immich-ha/'+name,doraise=True)
 sys.path.insert(0,'/usr/local/lib/immich-ha')
 from pg_stream import install_network_guard
 install_network_guard()

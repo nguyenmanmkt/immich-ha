@@ -34,7 +34,7 @@ def private_path(name):
         return not (p.name.endswith(".example"))
     if name.replace("\\", "/").endswith("/node/config.json"):
         return True
-    return p.name in ("project.json", "wrangler.jsonc", ".dev.vars", "worker-secrets.json") or p.suffix in (".key", ".pem", ".p12", ".dump", ".zip") or name.endswith((".sql", ".sql.gz"))
+    return p.name.startswith((".dev.vars", "id_rsa", "id_ed25519")) or p.name in ("project.json", "wrangler.jsonc", "worker-secrets.json", "known_hosts", "authorized_keys", ".pgpass") or p.suffix in (".key", ".pem", ".p12", ".ppk", ".pfx", ".dump", ".zip") or name.endswith((".sql", ".sql.gz"))
 
 
 def known_secrets():

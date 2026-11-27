@@ -371,6 +371,10 @@ class Runtime:
             return default
 
     def write(self, name, value):
+        if name=='mode' and value in ('frozen','upgrade-frozen','active'):
+            from quorum_authority import runtime_admission
+            admission=runtime_admission(self)
+            if admission:admission.local_block(value!='active')
         atomic(ROOT / name, value + "\n", self.group if name in ("current-db", "mode") else None)
         self._metrics_at = 0
 
@@ -406,6 +410,11 @@ class Runtime:
 
     def guard(self, command, source=False):
         self.mounted()
+        from quorum_authority import runtime_admission
+        admission = runtime_admission(self)
+        if admission:
+            admission.guard_command(command)
+            if source and self.mode() != 'frozen':admission.assert_grant(command['epoch'], fresh=True)
         for attempt in range(3):
             try:
                 current = self.info()
@@ -420,6 +429,11 @@ class Runtime:
             time.sleep(attempt + 1)
         if current.get("nodeMaintenance", {}).get(self.node, {}).get("enabled"):
             raise RuntimeError("Máy đang bảo trì; dừng tác vụ ghi dữ liệu")
+        if admission:
+            operation=current.get('operation') or {}
+            if operation.get('id')!=command.get('jobId') or operation.get('status') in (None,'failed','succeeded'):
+                raise RuntimeError('Tác vụ Cloudflare cũ không còn hiệu lực')
+            admission.guard_command(command)
         if current["epoch"] != command["epoch"] or current["owner"] != command["source"]:
             raise RuntimeError("Quyền phục vụ đã đổi; dừng thao tác cũ")
         if (current["owner"] == self.node) != source:

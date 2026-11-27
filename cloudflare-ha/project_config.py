@@ -41,6 +41,9 @@ def load_project(path=None):
             raise ValueError("Invalid server label")
         if not isinstance(description["containerId"], int) or description["containerId"] < 100:
             raise ValueError("Invalid Proxmox container ID")
+        if description.get('tailscaleIp'):
+            if ipaddress.ip_address(description['tailscaleIp']) not in ipaddress.ip_network('100.64.0.0/10'):
+                raise ValueError('Use a Tailscale IPv4 address')
     access = settings.get("access", {})
     if access.get("teamDomain"):
         hostname(access["teamDomain"])
@@ -51,6 +54,15 @@ def load_project(path=None):
     for email in access.get("emails", []):
         if not isinstance(email, str) or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
             raise ValueError("Invalid administrator email")
+    urls=[settings.get('funnelUrl')] + [settings['nodes'][n].get('funnelUrl') for n in ('primary','backup')]
+    for value in filter(None,urls):
+        parsed = urllib.parse.urlsplit(value)
+        host = hostname(parsed.hostname or '')
+        if parsed.scheme != 'https' or not host.endswith('.ts.net') or parsed.port not in (None,443,8443,10000) or parsed.username or parsed.password or parsed.path not in ('','/') or parsed.query or parsed.fragment:
+            raise ValueError('funnelUrl must be a public Tailscale HTTPS URL without path or credentials')
+    if settings.get('witnessTailscaleIp'):
+        if ipaddress.ip_address(settings['witnessTailscaleIp']) not in ipaddress.ip_network('100.64.0.0/10'):
+            raise ValueError('Use a Tailscale IPv4 address for witness')
     return settings
 
 
@@ -63,6 +75,8 @@ def worker_variables(project):
         "NODE_METADATA": json.dumps(project["nodes"], ensure_ascii=False),
         "ACCESS_TEAM_DOMAIN": access.get("teamDomain", ""), "ACCESS_AUD": access.get("audience", ""),
         "ADMIN_EMAILS": json.dumps(access.get("emails", [])),
+        "FUNNEL_URL": project.get('funnelUrl', '').rstrip('/'),
+        "FUNNEL_WITNESS_IP": project.get('witnessTailscaleIp', ''),
     }
 
 

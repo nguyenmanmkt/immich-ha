@@ -236,8 +236,6 @@ function renderControls() {
     button.disabled = !possible || button.dataset.prepareNode === state.owner;
   });
   document.querySelectorAll('[data-switch-node]').forEach((button) => { button.disabled = !possible || button.dataset.switchNode === state.owner; });
-  $("#auto-toggle").checked = state.auto;
-  $("#auto-toggle").disabled = upgradeLocked || running || submitting || !!state.pending || (!state.auto && !state.standbyEligible);
   $("#recovery-toggle").checked = state.recovery?.enabled === true;
   $("#recovery-toggle").disabled = upgradeLocked || running || submitting || !state.recovery;
   $("#preferred-node").disabled = upgradeLocked || running || submitting || !!state.pending || !!state.operation?.maintenance;
@@ -255,16 +253,18 @@ function renderControls() {
 }
 
 function renderUpgrades() {
-  const recipes = state.upgradeRecipes || [];
-  upgradeVersion ||= recipes[0]?.version;
+  const saved=state.immichUpgrade, job=state.operation;
+  const running=!terminal(job), locked=saved?.applying && saved.phase!=='completed';
+  const versions=nodes.map(n=>state.agents?.[n]?.metrics?.appVersion);
+  const recipes = (state.upgradeRecipes || []).filter(r=>versions.every(v=>v===r.fromVersion) ||
+    (locked && r.version===saved.version));
+  if (!recipes.some(r=>r.version===upgradeVersion)) upgradeVersion=recipes[0]?.version;
   const recipe = recipes.find(r => r.version === upgradeVersion);
   const select = $('#upgrade-version');select.replaceChildren();
   for (const r of recipes) { const option=el('option','',r.version);option.value=r.version;select.append(option); }
   select.value=upgradeVersion || '';
   $('#upgrade-notes').hidden=!recipe;
   if (recipe) $('#upgrade-notes').href=recipe.notesUrl;
-  const saved=state.immichUpgrade, job=state.operation;
-  const running=!terminal(job), locked=saved?.applying && saved.phase!=='completed';
   const online=nodes.every(n=>capable(n) && state.agents[n].metrics?.immichUpgrade?.protocol===1 &&
     (!recipe || state.agents[n].metrics.immichUpgrade.recipes?.includes(recipe.recipe)));
   const ready=online && recipe && state.ready && state.standbyEligible && !state.pending && !running && !submitting;
@@ -275,21 +275,30 @@ function renderUpgrades() {
   $('#upgrade-apply').disabled=!ready || !sameBase || !prepared || locked;
   $('#upgrade-retry').hidden=!(locked && job?.status==='failed');
   $('#upgrade-retry').disabled=!online || running || submitting;
-  const phases={prepared:'ĐÃ CHUẨN BỊ',applying:'ĐANG NÂNG CẤP',completed:'ĐÃ NÂNG CẤP',stale:'CẦN CHUẨN BỊ LẠI'};
-  $('#upgrade-phase').textContent=locked && job?.status==='failed' ? 'CẦN XỬ LÝ' : phases[saved?.phase] || (running && job.upgrade ? 'ĐANG CHUẨN BỊ' : 'CHƯA CHUẨN BỊ');
+  const phase=$('#upgrade-phase');
+  phase.hidden=!(locked || (running && job?.upgrade) || (recipe && prepared));
+  phase.textContent=locked ? job?.status==='failed' ? 'CẦN XỬ LÝ' : 'ĐANG NÂNG CẤP' : prepared ? 'SẴN SÀNG CÀI ĐẶT' : 'ĐANG CHUẨN BỊ';
+  phase.className='small-badge '+(locked && job?.status==='failed'?'red':'amber');
   $('#upgrade-nodes').replaceChildren();
   for (const n of nodes) {
     const card=el('div','upgrade-node');card.append(icon('server'));
     const text=el('div','',name(n));text.append(el('strong','',state.agents?.[n]?.metrics?.appVersion || 'Chưa xác nhận'));
+    text.append(el('small','',!isFresh(n) ? 'Số liệu cũ · máy chưa phản hồi' : n===state.owner ? 'Máy đang phục vụ' : 'Máy dự phòng'));
     card.append(text);$('#upgrade-nodes').append(card);
   }
-  const current=recipe && nodes.every(n=>state.agents?.[n]?.metrics?.appVersion===recipe.version);
+  const confirmed=nodes.every(n=>isFresh(n) && state.agents?.[n]?.metrics?.appVersion);
+  $('#upgrade-options').hidden=!recipe || locked;
+  $('#upgrade-stage').hidden=!recipe || locked;
+  $('#upgrade-apply').hidden=!recipe || locked || !prepared;
+  $('#upgrade-buttons').hidden=!recipe && !locked;
   $('#upgrade-hint').textContent=locked ? 'Đang bảo vệ phiên nâng cấp. Nếu có lỗi, tiếp tục sửa bản mới; không tự hạ code hoặc phục hồi database.' :
-    current ? `Cả hai máy đang chạy Immich ${recipe.version}.` :
+    !confirmed ? 'Chưa xác nhận phiên bản hiện tại trên cả hai máy.' :
+    !recipe ? versions[0]===versions[1] ? 'Chưa có bản nâng cấp khả dụng.' : 'Hai máy khác phiên bản. Chưa có quy trình nâng cấp phù hợp.' :
     !online ? 'Chờ cả hai agent hỗ trợ nâng cấp và kết nối đầy đủ.' : prepared ? 'Bản mới đã chuẩn bị trên cả hai máy. Bước áp dụng sẽ sao lưu database và tạm ngưng phục vụ.' :
     !sameBase ? 'Hai máy phải cùng phiên bản đầu vào của recipe. Chưa hỗ trợ hạ phiên bản hoặc nâng cấp ngoài danh sách.' :
     'Chuẩn bị riêng code mới trong staging, giữ app hiện tại phục vụ. Chỉ áp dụng sau lần xác nhận tiếp theo.';
-  const progress=$('#upgrade-progress');progress.hidden=!job?.upgrade;
+  const progress=$('#upgrade-progress');progress.hidden=!job?.upgrade || job.status==='succeeded';
+  progress.className='notice'+(job?.status==='failed'?' error':' upgrade-live');
   if (job?.upgrade) progress.textContent=job.error || job.progress?.message || (job.status==='succeeded' ? 'Hoàn tất · '+(job.kind==='upgrade-stage'?'đã chuẩn bị, chưa nâng phiên bản':'đã xác nhận cả hai máy') : job.steps[job.index]?.label || 'Đang xử lý');
 }
 
@@ -349,18 +358,25 @@ function renderBackups() {
     const current = isFresh(node) && data?.state === 'ok' && state.serverTime - data.checkedAt <= 180000;
     const card = el('article', 'panel backup-summary-card'), symbol = el('div', 'server-symbol'); symbol.append(icon('archive'));
     const copy = el('div'); copy.append(el('h2', '', name(node)), el('strong', '', data?.state === 'ok' ? `${data.count} bản · ${fileBytes(data.bytes)}` : 'Chưa có dữ liệu'), el('small', '', current ? 'Cập nhật ' + time(data.checkedAt) : 'Chưa xác nhận · số liệu có thể cũ'));
+    card.classList.add(current ? 'inventory-current' : 'inventory-stale');
     card.append(symbol, copy); summary.append(card);
     for (const file of data?.files || []) {
       if (!files.has(file.name)) files.set(file.name, {});
       files.get(file.name)[node] = file;
     }
   }
-  const box = $('#backup-list'); box.replaceChildren();
+  const box = $('#backup-list'), scrollTop=box.scrollTop, scrollLeft=box.scrollLeft; box.replaceChildren();
   const table = el('table', 'backup-table'), head = el('thead'), headRow = el('tr');
   for (const label of ['File backup', 'Ngày tạo', 'Dung lượng', ...nodes.map(name)]) headRow.append(el('th', '', label));
   head.append(headRow); table.append(head);
   const body = el('tbody');
-  const rows = [...files.entries()].sort((a,b) => Math.max(...Object.values(b[1]).map(f => f.modifiedAt)) - Math.max(...Object.values(a[1]).map(f => f.modifiedAt)));
+  const knownOn = node => inventory[node]?.state==='ok' && isFresh(node) && state.serverTime-inventory[node].checkedAt<=180000;
+  const filter=$('#backup-filter').value || 'all';
+  const rows = [...files.entries()].sort((a,b) => Math.max(...Object.values(b[1]).map(f => f.modifiedAt)) - Math.max(...Object.values(a[1]).map(f => f.modifiedAt))).filter(([,copies])=>{
+    const both=nodes.every(n=>knownOn(n) && copies[n]);
+    return filter==='both'?both:filter==='attention'?!both:true;
+  });
+  $('#backup-count').textContent=String(rows.length);
   for (const [filename, copies] of rows) {
     const file = copies[state.owner] || Object.values(copies)[0], row = el('tr');
     const label = el('td', 'backup-filename', filename); label.title = filename;
@@ -371,24 +387,56 @@ function renderBackups() {
       const badge = el('span', 'small-badge ' + (copies[node] ? 'green' : known ? 'amber' : ''), copies[node] ? known ? 'Có file' : 'Có · số liệu cũ' : known ? inventory[node].truncated ? 'Ngoài danh sách' : 'Chưa có' : 'Chưa xác nhận');
       cell.append(badge); row.append(cell);
     }
+    [...row.children].forEach((cell,index)=>cell.setAttribute('data-label',['File backup','Ngày tạo','Dung lượng',...nodes.map(name)][index]));
     body.append(row);
   }
   table.append(body);
   if (rows.length) box.append(table);
-  else box.append(el('div', 'history-empty', 'Chưa ghi nhận backup mặc định Immich.'));
+  else box.append(emptyState('archive',files.size?'Không có bản sao trong nhóm này':'Chưa ghi nhận backup','Bản sao database do Immich tạo sẽ xuất hiện tại đây.'));
   if (nodes.some(n => inventory[n]?.truncated)) box.append(el('p', 'hint', 'Hiển thị tối đa 30 bản mới nhất mỗi máy.'));
+  box.scrollTop=scrollTop;box.scrollLeft=scrollLeft;
   if (state.publicUrl) { $('#manage-backups').href = new URL('/admin/maintenance', state.publicUrl).href; $('#manage-backups').hidden = false; }
 }
 
+function emptyState(symbol,title,description) {
+  const box=el('div','page-empty'),mark=el('span','empty-symbol');mark.append(icon(symbol));
+  box.append(mark,el('strong','',title));if(description)box.append(el('p','',description));return box;
+}
+
+function historyGroup(action) {
+  return action.startsWith('upgrade-')?'upgrades':['switch','prepare','resume','owner-changed','takeover'].includes(action)?'roles':'settings';
+}
+function historyDetails(value) {
+  return String(value || '').replace(/\b(primary|backup)\b/g,n=>name(n));
+}
 function renderHistory() {
-  const box = $("#history-list"); box.replaceChildren();
-  const events = [...(state.audit || [])].reverse();
-  if (!events.length) { box.append(el("div", "history-empty", "Chưa có thao tác được ghi nhận.")); return; }
+  const box = $("#history-list"), scrollTop=box.scrollTop; box.replaceChildren();
+  const query=($('#history-search').value || '').trim().toLocaleLowerCase('vi-VN'),filter=$('#history-filter').value || 'all';
+  const records=[...(state.audit || [])],job=state.operation;
+  if(job?.upgrade && terminal(job) && job.finishedAt)records.push({at:job.finishedAt,action:job.kind,actor:job.actor,
+    outcome:job.status,details:job.status==='succeeded' ? job.kind==='upgrade-stage' ? `Đã chuẩn bị Immich ${job.upgrade.version}` : `Đã xác nhận Immich ${job.upgrade.version} trên hai máy` : job.error});
+  const events = records.sort((a,b)=>b.at-a.at).filter(item=>
+    (filter==='all' || historyGroup(item.action)===filter) &&
+    [labels[item.action] || item.action,historyDetails(item.details),item.actor].join(' ').toLocaleLowerCase('vi-VN').includes(query));
+  $('#history-count').textContent=`${events.length} sự kiện`;
+  if (!events.length) { box.append(emptyState('clock',(query || filter!=='all')?'Không tìm thấy sự kiện':'Chưa có lịch sử','')); return; }
+  let day='';
   for (const item of events) {
-    const row = el("div", "history-row");
-    const details = el("div"); details.append(el("strong", "", labels[item.action] || item.action), el("p", "", item.details || ""));
-    row.append(el("time", "", time(item.at)), details, el("small", "", item.actor)); box.append(row);
+    const date=new Date(item.at),group=historyGroup(item.action);
+    const nextDay=new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',day:'2-digit',month:'2-digit',year:'numeric'}).format(date);
+    if(nextDay!==day){box.append(el('h3','history-day',nextDay));day=nextDay;}
+    const row = el("div", "history-event"),symbol=el('span','history-symbol '+group);
+    symbol.append(icon(group==='upgrades'?'upload':group==='roles'?'handover':'settings'));
+    const details = el("div",'history-copy'); details.append(el("strong", "", labels[item.action] || item.action));
+    if(item.outcome)details.append(el('span','small-badge history-outcome '+(item.outcome==='succeeded'?'green':'red'),item.outcome==='succeeded'?'Hoàn tất':'Cần xử lý'));
+    if(item.details)details.append(el("p", "", historyDetails(item.details)));
+    const actor=['system','automatic','coordinator','agent'].includes(item.actor)?'Tự động':item.actor || 'Hệ thống';
+    details.append(el('small','history-actor',actor));
+    const at=el('time','',new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(date));
+    at.setAttribute('datetime',date.toISOString());
+    row.append(symbol,details,at);box.append(row);
   }
+  box.scrollTop=scrollTop;
 }
 
 function renderTransition() {
@@ -419,7 +467,56 @@ function renderTransition() {
   $("#transition-recovery").hidden = !view.recovery;
 }
 
+function renderFunnel() {
+  const value = state.funnel;
+  $('#funnel-panel').hidden = !value;
+  if (!value) return;
+  const url = new URL(value.url);
+  if (url.protocol !== 'https:' || !url.hostname.endsWith('.ts.net') || url.username || url.password) {
+    $('#funnel-panel').hidden = true; return;
+  }
+  $('#funnel-link').href = url.href;
+  $('#funnel-link').setAttribute('title', 'Mở ' + url.host);
+  const stale = !Number.isFinite(value.checkedAt) || state.serverTime < value.checkedAt || state.serverTime - value.checkedAt > 180000;
+  const status = stale ? value.checkedAt ? 'stale' : 'unknown' : value.state;
+  const labels = { healthy: 'Hoạt động', unavailable: 'Chưa truy cập được', stale: 'Kết quả cũ', unknown: 'Chưa kiểm tra', 'route-mismatch': 'Chưa khớp active' };
+  $('#funnel-status').textContent = labels[status] || labels.unknown;
+  $('#funnel-status').className = 'funnel-health ' + (status === 'healthy' ? 'green' : 'amber');
+  $('#funnel-route').textContent = value.ok && value.node ? name(value.node) + (Number.isFinite(value.latencyMs) ? ' · ' + value.latencyMs + ' ms' : '') : value.error || 'Đợi lần kiểm tra tiếp theo';
+  $('#funnel-checked').textContent = value.checkedAt ? 'Kiểm tra ' + time(value.checkedAt) : 'Kiểm tra mỗi phút qua Internet';
+  $('#funnel-panel').setAttribute('title', url.host + ' · ' + $('#funnel-checked').textContent);
+  const control=value.control;
+  $('#funnel-toggle').checked=control?.enabled !== false;
+  $('#funnel-toggle').disabled=submitting || !control;
+  if (control) {
+    if (!control.confirmed) {
+      $('#funnel-status').textContent=control.error ? 'Cần kiểm tra witness' : control.reportedAt && state.serverTime-control.reportedAt>90000 ? 'Witness chưa phản hồi' : control.enabled ? 'Đang bật…' : 'Đang tắt…';
+      $('#funnel-status').className='funnel-health amber';
+    } else if (!control.enabled) {
+      $('#funnel-status').textContent='Đã tắt';
+      $('#funnel-status').className='funnel-health';
+      $('#funnel-route').textContent='URL chung đang ngừng phục vụ';
+    }
+  }
+  const list=$('#funnel-addresses');list.replaceChildren();
+  for (const entry of [{label:'Funnel chung · witness',url:value.url,ip:value.tailscaleIp},...nodes.map(n=>({label:name(n),url:state.nodes?.[n]?.funnelUrl,ip:state.nodes?.[n]?.tailscaleIp}))]) {
+    const group=el('section','funnel-address-group');group.append(el('strong','',entry.label));
+    for (const [label,text] of [['URL',entry.url],['Tailscale',entry.ip]]) {
+      if (!text) continue;
+      const row=el('div','funnel-address-row');row.append(el('small','',label));
+      const output=el(label==='URL'?'a':'span','funnel-address-value',text);
+      if (label==='URL') {const address=new URL(text);if (address.protocol==='https:' && address.hostname.endsWith('.ts.net')) {output.href=address.href;output.target='_blank';output.rel='noreferrer';}}
+      row.append(output);
+      const copy=el('button','address-copy','⧉');copy.type='button';copy.setAttribute('aria-label','Sao chép '+label+' '+entry.label);
+      copy.addEventListener('click',async()=>{try {await navigator.clipboard.writeText(text);toast('Đã sao chép');} catch {toast('Không sao chép được; bạn có thể chọn địa chỉ để sao chép.');}});
+      row.append(copy);group.append(row);
+    }
+    list.append(group);
+  }
+}
+
 function render() {
+  renderFunnel();
   $("#servers").replaceChildren(...nodes.map(renderServer));
   if (!target || displayedOwner !== state.owner) target = nodes.find((node) => node !== state.owner);
   displayedOwner = state.owner;
@@ -525,10 +622,12 @@ $("#confirm-form").addEventListener("submit", (event) => {
   if (!dialogAction || $("#confirm-input").value.trim().toLowerCase() !== dialogAction.expected) { event.preventDefault(); return; }
   sendAction({ action: dialogAction.kind, target: dialogAction.target, ...(dialogAction.version ? {version:dialogAction.version} : {}), ...(["set-preference", "set-maintenance"].includes(dialogAction.kind) ? { enabled: dialogAction.enabled } : {}) });
 });
-$("#auto-toggle").addEventListener("change", (event) => { const enabled = event.target.checked; event.target.checked = state.auto; sendAction({ action: "set-auto", enabled }); });
 $("#recovery-toggle").addEventListener("change", (event) => { const enabled = event.target.checked; event.target.checked = state.recovery.enabled; sendAction({ action: "set-recovery", enabled }); });
 $("#refresh").addEventListener("click", load);
 $('#upgrade-version').addEventListener('change', event=>{upgradeVersion=event.target.value;renderUpgrades();});
+$('#backup-filter').addEventListener('change',renderBackups);
+$('#history-filter').addEventListener('change',renderHistory);
+$('#history-search').addEventListener('input',renderHistory);
 for (const kind of ['stage','apply','retry']) $('#upgrade-'+kind).addEventListener('click',()=>confirmAction('upgrade-'+kind));
 $("#preferred-node").addEventListener("change", (event) => { preferredNode = event.target.value; preferenceDirty = true; renderControls(); });
 $("#return-toggle").addEventListener("change", (event) => {
@@ -544,7 +643,11 @@ $("#alerts-enable").addEventListener("change", (event) => {
 $("#save-alerts").addEventListener("click", () => sendAction({ action: "set-alerts", enabled: $("#alerts-enable").checked, webhook: $("#slack-webhook").value.trim() }));
 $("#test-alerts").addEventListener("click", () => sendAction({ action: "test-alerts" }));
 $("#delete-alerts").addEventListener("click", () => sendAction({ action: "set-alerts", enabled: false, remove: true }));
-for (const id of ['priority', 'slack']) {
+$('#funnel-toggle').addEventListener('change', event=>{
+  const enabled=event.target.checked;event.target.checked=state.funnel?.control?.enabled !== false;
+  sendAction({action:'set-funnel',enabled});
+});
+for (const id of ['priority', 'slack', 'funnel']) {
   $('#' + id + '-settings-button').addEventListener('click', () => {
     const body = $('#' + id + '-settings-body'); body.hidden = !body.hidden;
     $('#' + id + '-settings-button').setAttribute('aria-expanded', String(!body.hidden));
@@ -558,5 +661,12 @@ document.querySelectorAll("[data-view]").forEach((button) => button.addEventList
   $('#upgrades-view').hidden = view !== 'upgrades';
   $('#overview-view').hidden = view !== 'overview';
 }));
+for (const id of ['backup-list','history-list']) {
+  const list=$('#'+id);let hideScrollbar;
+  list.addEventListener('scroll',()=>{
+    list.classList.add('is-scrolling');clearTimeout(hideScrollbar);
+    hideScrollbar=setTimeout(()=>list.classList.remove('is-scrolling'),800);
+  },{passive:true});
+}
 document.addEventListener("visibilitychange", () => { if (document.hidden) clearTimeout(timer); else load(); });
 load();

@@ -42,17 +42,19 @@ sys.path.insert(0,'/usr/local/lib/immich-ha')
 from pg_stream import configuration,status
 assert configuration()['enabled'];assert status()['systemId']
 save=Path('/etc/immich-ha')/('wal-handover-'+INPUT['stamp']);save.mkdir(mode=0o700)
-for name in ['ha_runtime.py','pg_stream.py','ha_agent.py']:shutil.copy2('/usr/local/lib/immich-ha/'+name,save/name)
+for name in ['ha_runtime.py','pg_stream.py','quorum_lock.py','quorum_authority.py','ha_agent.py']:
+ p=Path('/usr/local/lib/immich-ha')/name
+ if p.exists():shutil.copy2(p,save/name)
 shutil.copy2('/usr/local/sbin/immich-ha-agent',save/'agent-exec')
 print(json.dumps({'saved':str(save)}))
 """
             print(node,m.remote(c,code,{'stamp':stamp}),flush=True)
-            for name in ('pg_stream.py','ha_runtime.py'):
+            for name in ('pg_stream.py','ha_runtime.py','quorum_lock.py','quorum_authority.py'):
                 m.upload_module(c,m.ROOT/'node'/name,'/usr/local/lib/immich-ha/'+name)
             m.upload_module(c,m.ROOT/'node/agent.py','/usr/local/lib/immich-ha/ha_agent.py')
             m.upload_module(c,m.ROOT/'node/agent.py','/usr/local/sbin/immich-ha-agent',0o700)
             code="""import json,py_compile,subprocess
-for name in ['ha_runtime.py','pg_stream.py','ha_agent.py']:py_compile.compile('/usr/local/lib/immich-ha/'+name,doraise=True)
+for name in ['ha_runtime.py','pg_stream.py','quorum_lock.py','quorum_authority.py','ha_agent.py']:py_compile.compile('/usr/local/lib/immich-ha/'+name,doraise=True)
 subprocess.run(['systemctl','restart','immich-ha-agent.service'],check=True,capture_output=True,timeout=30)
 print(json.dumps({'agentReloaded':True}))
 """

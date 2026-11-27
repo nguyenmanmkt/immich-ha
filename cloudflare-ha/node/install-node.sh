@@ -20,10 +20,10 @@ PY
 mountpoint -q /mnt/immich-storage
 apt-get update
 apt-get install -y nginx python3 iproute2
-install -d -m 700 /etc/immich-ha /var/lib/immich-ha
 if [[ -e /etc/immich-ha/config.json ]]; then
   echo 'STOP: An existing agent config was found; do not overwrite it'; exit 1;
 fi
+install -d -m 700 /etc/immich-ha /var/lib/immich-ha
 install -m 600 "$base/config.json" /etc/immich-ha/config.json
 install -m 700 "$base/agent.py" /usr/local/sbin/immich-ha-agent
 install -m 644 "$base/immich-ha.nginx.conf" /etc/nginx/conf.d/immich-ha.conf

@@ -27,6 +27,11 @@ htmlcov/
 *.pem
 *.key
 *.p12
+*.ppk
+*.pfx
+known_hosts
+authorized_keys
+.pgpass
 id_rsa*
 id_ed25519*
 .DS_Store

@@ -2,6 +2,8 @@
 
 Luồng chuẩn: hai Immich native LXC → Tailscale/Syncthing → Worker/gate → agent/runtime v2 → streaming → kiểm tra → bật tự động. Các lệnh ở dưới là thao tác thật; làm xong điểm kiểm tra của mỗi bước rồi mới tiếp tục.
 
+Bản đầy đủ có ba phần: HA dữ liệu trên hai LXC, quorum/fallback trên hai node và witness, rồi gateway/Funnel dự phòng. Đọc [cách hoạt động](ARCHITECTURE.vi.md) trước khi chọn điểm bắt đầu. Mục 1–10 dựng HA dữ liệu; mục 11 bổ sung quorum và đường truy cập dự phòng. Hệ thống cũ đang chạy chỉ dùng mục cập nhật.
+
 ## 0. Chọn đúng nơi chạy lệnh
 
 | Nơi chạy | Công việc |
@@ -13,11 +15,11 @@ Luồng chuẩn: hai Immich native LXC → Tailscale/Syncthing → Worker/gate �
 
 Trước khi cài package, chạy `hostname` để biết đang ở host hay LXC. Ví dụ trên **Proxmox host**: `pct enter 113` để vào LXC A; ID phải được thay bằng ID thực tế của bạn. Tailscale dùng cho replication phải nằm trong LXC Immich, không chỉ nằm trên Proxmox host.
 
-Nếu hệ thống đã có `/etc/immich-ha/config.json` hoặc cụm PostgreSQL `16/ha`, chuyển tới [Cập nhật hệ thống đã chạy](#11-cập-nhật-hệ-thống-đã-chạy). Không chạy lại bootstrap/stage.
+Nếu hệ thống đã có `/etc/immich-ha/config.json` hoặc cụm PostgreSQL `16/ha`, chuyển tới [Cập nhật hệ thống đã chạy](#12-cập-nhật-hệ-thống-đã-chạy). Không chạy lại bootstrap/stage.
 
 ## 1. Hai Immich và ổ dữ liệu
 
-Môi trường đã kiểm chứng: Immich native 3.4.1, PostgreSQL 16.16, user `immich`, Debian LXC amd64, dịch vụ Redis `redis-server.service`. Hai máy phải cùng kiến trúc, cùng bản Immich, cùng PostgreSQL 16 và các extension tương thích (đặc biệt vector/VectorChord). Bộ cài streaming hiện không hỗ trợ tự chuyển PostgreSQL major khác sang 16.
+Môi trường đã kiểm chứng: Immich native 3.4.1 và nâng cấp theo recipe lên 3.4.2, PostgreSQL 16.16, user `immich`, Debian LXC amd64, dịch vụ Redis `redis-server.service`. Hai máy phải cùng kiến trúc, cùng bản Immich, cùng PostgreSQL 16 và các extension tương thích (đặc biệt vector/VectorChord). Bộ cài streaming hiện không hỗ trợ tự chuyển PostgreSQL major khác sang 16.
 
 Có thể tạo LXC bằng [community-script Immich](https://community-scripts.github.io/ProxmoxVE/scripts?id=immich). Chạy lệnh upstream trên **Proxmox host**, không chạy bên trong một LXC đã có Immich:
 
@@ -298,11 +300,69 @@ python admin.py auto-on
 python admin.py status --compact
 ```
 
-Có thể đặt các tùy chọn tương đương trên UI và cấu hình Slack ở đó. Bật auto cuối cùng, sau khi source/standby và gate đều được xác nhận. Lưu ý: auto-recovery mặc định có thể đã bật; luôn xem status trước thao tác.
+Recovery và tự trở về máy ưu tiên có công tắc riêng trên UI; Slack cấu hình tại đó. Tự chuyển khi sự cố không có công tắc tắt trên dashboard: dùng `auto-on` sau khi source/standby và gate được xác nhận, rồi giữ bật trong vận hành. Script bảo trì/rollout vẫn có thể tạm khóa tự động. `preference-on` là tùy chọn; bỏ qua nếu không muốn tự trở về một máy cố định. Luôn xem status trước thao tác.
 
 Thử có kiểm soát: chuyển active chủ động A → B → A, rồi thử sự cố và máy cũ trở lại; upload/xem ảnh sau mỗi lần. Bàn giao nhanh chỉ rút thời gian fencing khi có chứng cứ dừng nguồn, không bỏ kiểm tra WAL/file hay thời gian startup. Ghi lại kết quả thật; không gọi test controller là test failover thực tế.
 
-## 11. Cập nhật hệ thống đã chạy
+## 11. Witness, quorum và đường truy cập dự phòng
+
+Phần này mở rộng hệ thống streaming đã khỏe/idle. Làm từng checkpoint trong [QUORUM.vi.md](QUORUM.vi.md), kiểm tra xong mới sang bước kế. Không paste cả quy trình như một script liên tục.
+
+### Witness và kết nối
+
+Tạo LXC Debian 13 amd64 trên máy vật lý thứ ba, độc lập với hai host Immich. Cấu hình đã dùng để kiểm tra: 1 vCPU, 1 GiB RAM, rootfs 8 GiB; không cần ổ ảnh hoặc Immich/PostgreSQL trên witness. Nó không cần cùng cluster Proxmox; quorum Immich khác QDevice Proxmox.
+
+Cấp TUN từ host như bước 2, rồi cài SSH/Tailscale **bên trong witness**, đăng nhập cùng tailnet và kiểm tra kết nối tới hai LXC. Kiểm tra hostname trước khi cài để không làm nhầm trên host. Đồng bộ giờ; xác minh/pin SSH fingerprint bằng console. Điền `SSH_COORDINATOR_*` và key trong `.env`; tên coordinator ở đây chỉ là cấu hình SSH witness, không thay vai trò chính của Cloudflare.
+
+| Kết nối | Phạm vi |
+| --- | --- |
+| TCP 22 | Máy quản trị/jump host tới ba LXC |
+| TCP 2379, 2380 | Ba thành viên quorum qua Tailscale/mTLS, không public |
+| TCP 5433, 22000 | Replication/Syncthing giữa hai Immich node |
+| TCP 8090 mặc định | Client LAN/Tailscale tới gateway; witness tới gateway node |
+| HTTPS outbound | Worker API, Tailscale, nguồn package khi triển khai |
+
+### Quorum và fallback
+
+Từ `cloudflare-ha/` trên máy quản trị, theo thứ tự:
+
+| Bước | Lệnh | Điểm kiểm tra |
+| --- | --- | --- |
+| 1 | `python tools/quorum-preflight.py` | Danh tính, Tailscale/SSH, một writer và replica đúng lineage |
+| 2 | `python tools/quorum-stage.py --install` | etcd riêng, mTLS, chưa cấp quyền active |
+| 3 | `python tools/quorum-stage.py --check` | Ba member/endpoint khỏe |
+| 4 | `python tools/quorum-shadow.py --deploy` | Observer/CAS/TTL shadow, chưa đổi grant |
+| 5 | `python tools/quorum-shadow.py --check` | Quan sát đúng owner/epoch |
+| 6 | `python tools/quorum-enforce.py --deploy` | Grant quorum bắt buộc |
+| 7 | `python tools/quorum-enforce.py --check` | Marker/proof/lease và PostgreSQL đúng |
+| 8 | `python tools/quorum-fallback.py --deploy` | Bật fallback và đối chiếu CF |
+| 9 | `python tools/quorum-fallback.py --check` | Authority/quorum và agent hợp lệ |
+
+Giữ cluster ID, CA và key trong `generated/`; không tạo lại khi lỗi. Test dừng quorum witness chỉ dành cho giai đoạn isolated. Bài chặn heartbeat CF là checkpoint riêng có timer phục hồi, không chạy trong mỗi lần triển khai. TLS compat chỉ dành cho cụm cũ thiếu AKI theo tài liệu, không chạy repair lên cụm mới vì thấy tên tool.
+
+### Gateway và Funnel
+
+| Bước | Lệnh triển khai | Người vận hành thử trước khi tiếp tục |
+| --- | --- | --- |
+| 1 | `python tools/install-local-gateway.py --deploy` | App qua LAN/Tailscale node active; standby đóng |
+| 2 | `python tools/install-funnel.py --deploy` | URL riêng active: login/xem/upload qua 4G |
+| 3 | `python tools/install-witness-gateway.py --deploy` | Gateway witness đúng owner/epoch |
+| 4 | `python tools/install-witness-funnel.py --deploy` | URL chung qua Internet và giữ URL khi đổi active |
+| 5 | `python tools/install-funnel-control.py --deploy` | ⚙ có URL/IP đúng, witness xác nhận Funnel đang bật |
+
+Bốn tool đầu có `--check`. Tailscale có thể yêu cầu chủ tailnet phê duyệt HTTPS/Funnel qua link CLI; hoàn tất rồi tiếp tục. Tool giữ Serve hiện có, không reset toàn bộ route. Không public 2283, 9081, PostgreSQL hay etcd.
+
+Bước điều khiển cần Funnel chung/riêng đã được xác nhận và Funnel chung đang bật. Nó bổ sung metadata URL/IP, thêm token riêng, cập nhật Worker và cài timer witness. Timer lấy yêu cầu khoảng 15 giây/lần, chỉ đổi đúng listener chung và báo xác nhận; không đổi role/grant hoặc service Immich. Tắt URL chung ngắt người đang dùng URL đó, giữ đường CF và Funnel riêng.
+
+Chỉ muốn giám sát: đặt `funnelUrl` trong project rồi `python deploy.py --update`, không cần timer. Probe Internet mỗi phút dùng nonce tránh cache; kết quả quá 3 phút đánh dấu cũ. Khi CF mất, monitor/dashboard có thể mất; witness giữ Funnel hiện có. Xem [CONFIG.vi.md](CONFIG.vi.md).
+
+### Nghiệm thu
+
+Thử bàn giao chủ động, sự cố một LXC, máy đó trở lại và chuẩn bị dự phòng, tự trở về máy ưu tiên, URL Funnel chung, lỗi đường điều phối CF rồi khôi phục. Sau mỗi bước xác nhận xem/upload, một PostgreSQL writable, standby gate đóng, WAL/file đủ và job không lỗi. Tắt/bật Funnel là bài thử riêng do người vận hành chọn thời điểm.
+
+Ghi rõ bài đã thử thật và bài chỉ mô phỏng. Chặn heartbeat agent không chứng minh mọi kiểu outage Cloudflare/network partition đã được kiểm tra.
+
+## 12. Cập nhật hệ thống đã chạy
 
 Không chạy lại `install-node.sh`, `configure.py`, `stage` hoặc `cutover`.
 
@@ -310,6 +370,9 @@ Không chạy lại `install-node.sh`, `configure.py`, `stage` hoặc `cutover`.
 | --- | --- |
 | Worker/UI | `python deploy.py --update` |
 | Agent streaming và bàn giao WAL/nhanh | `python tools/upgrade-wal-handover.py` |
+| Runtime khi đã bật quorum/fallback | `python tools/quorum-fallback.py --deploy`, hai node khỏe/idle, theo checkpoint 3c; không chạy lại stage |
+| Kiểm tra quorum/fallback | `python tools/quorum-fallback.py --check` |
+| Cài/cập nhật điều khiển Funnel | `python tools/install-funnel-control.py --deploy`, Funnel chung đang bật và cấu hình cũ khớp |
 | Chỉ build ZIP node | `python tools/package-nodes.py` |
 | Kiểm tra public | `python check-public.py` |
 | Cài tính năng nâng cấp Immich trên dashboard | `python tools/upgrade-immich-ha.py --via primary --deploy` |

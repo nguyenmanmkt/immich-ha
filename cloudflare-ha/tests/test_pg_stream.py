@@ -246,11 +246,19 @@ class StreamingTests(unittest.TestCase):
                     patch.object(pg.subprocess,'run',side_effect=[types.SimpleNamespace(returncode=0,stdout=active),types.SimpleNamespace(returncode=postgres_code)]):
                 (Path(tmp)/'mode').write_text('frozen\n')
                 s=self.stream();s.runtime.mode.return_value='frozen'
+                s.runtime.grant={'epoch':7}
+                s.runtime.quorum_authority=Mock()
+                def release(epoch):
+                    self.assertEqual(epoch,7)
+                    self.assertEqual(fsync.call_count,2)
+                s.runtime.quorum_authority.release_frozen.side_effect=release
                 if valid:
                     self.assertTrue(s.frozen_proof()['frozenDurable']);self.assertEqual(fsync.call_count,2)
+                    s.runtime.quorum_authority.release_frozen.assert_called_once_with(7)
                 else:
                     with self.assertRaises(RuntimeError):s.frozen_proof()
                     fsync.assert_not_called()
+                    s.runtime.quorum_authority.release_frozen.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()
