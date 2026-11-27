@@ -18,12 +18,12 @@ Làm theo [chuẩn bị Cloudflare từng bước](CLOUDFLARE-SETUP.vi.md): bậ
 
 ## 2. Cài hai node
 
-Lấy cùng source/commit tại `/opt/immich-ha` trên hai LXC. Thay `<URL_REPO_HTTPS>` bằng repo của bạn.
+Lấy cùng source/commit từ repo dưới đây tại `/opt/immich-ha` trên hai LXC.
 
 **Console LXC A:**
 
 ```bash
-git clone <URL_REPO_HTTPS> /opt/immich-ha
+git clone https://github.com/nguyenmanmkt/immich-ha.git /opt/immich-ha
 cd /opt/immich-ha
 bash install.sh init
 ```
@@ -33,7 +33,7 @@ Nhập mạng/IP, thông tin Cloudflare, domain và email theo wizard. Giữ Con
 **Console LXC B:**
 
 ```bash
-git clone <URL_REPO_HTTPS> /opt/immich-ha
+git clone https://github.com/nguyenmanmkt/immich-ha.git /opt/immich-ha
 cd /opt/immich-ha
 bash install.sh join
 ```

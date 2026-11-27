@@ -70,7 +70,7 @@ Trong **console witness**, lấy đúng commit như A/B; không lấy một bả
 ```bash
 apt-get update
 apt-get install -y git ca-certificates
-git clone <URL_REPO_HTTPS> /opt/immich-ha
+git clone https://github.com/nguyenmanmkt/immich-ha.git /opt/immich-ha
 cd /opt/immich-ha
 git checkout <COMMIT_DANG_DUNG_TREN_A_B>
 ```

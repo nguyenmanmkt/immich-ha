@@ -29,7 +29,7 @@ Chưa biết lấy ID/token hoặc chuẩn bị trang quản lý? Hoàn tất [C
 Mở console/root **LXC Immich A**. Nếu thiếu Git, cài package `git` trước. Lấy source qua HTTPS, không clone đè `/opt/immich`:
 
 ```bash
-git clone <URL_REPO_HTTPS> /opt/immich-ha
+git clone https://github.com/nguyenmanmkt/immich-ha.git /opt/immich-ha
 cd /opt/immich-ha
 bash install.sh init
 ```
@@ -47,7 +47,7 @@ Nếu mã hết hạn trước khi B ghép, đăng nhập dashboard và chọn *
 Dùng đúng source/commit như A:
 
 ```bash
-git clone <URL_REPO_HTTPS> /opt/immich-ha
+git clone https://github.com/nguyenmanmkt/immich-ha.git /opt/immich-ha
 cd /opt/immich-ha
 bash install.sh join
 ```
